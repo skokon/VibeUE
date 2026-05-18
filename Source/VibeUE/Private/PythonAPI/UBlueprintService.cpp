@@ -63,6 +63,31 @@
 
 namespace
 {
+	static FString GetPinDefaultValueString(const UEdGraphPin* Pin)
+	{
+		if (!Pin)
+		{
+			return FString();
+		}
+
+		if (!Pin->DefaultValue.IsEmpty())
+		{
+			return Pin->DefaultValue;
+		}
+
+		if (!Pin->DefaultTextValue.IsEmpty())
+		{
+			return Pin->DefaultTextValue.ToString();
+		}
+
+		if (Pin->DefaultObject)
+		{
+			return Pin->DefaultObject->GetPathName();
+		}
+
+		return FString();
+	}
+
 	static UEdGraph* ResolveBlueprintGraph(UBlueprint* Blueprint, const FString& GraphName)
 	{
 		if (!Blueprint)
@@ -2964,7 +2989,9 @@ UEdGraph* UBlueprintService::FindGraph(UBlueprint* Blueprint, const FString& Gra
 		}
 	}
 
-	return nullptr;
+	// RPC graphs (Server/Multicast/Client) are not registered in FunctionGraphs or
+	// UbergraphPages but do exist as named subobjects on the Blueprint.
+	return FindObject<UEdGraph>(Blueprint, *GraphName);
 }
 
 UEdGraphNode* UBlueprintService::FindNodeById(UEdGraph* Graph, const FString& NodeId)
@@ -4027,7 +4054,7 @@ TArray<FBlueprintNodeInfo> UBlueprintService::GetNodesInGraph(
 				PinInfo.PinType = Pin->PinType.PinCategory.ToString();
 				PinInfo.bIsInput = (Pin->Direction == EGPD_Input);
 				PinInfo.bIsConnected = Pin->LinkedTo.Num() > 0;
-				PinInfo.DefaultValue = Pin->DefaultValue;
+				PinInfo.DefaultValue = GetPinDefaultValueString(Pin);
 				NodeInfo.Pins.Add(PinInfo);
 			}
 		}
@@ -4071,7 +4098,7 @@ namespace
 			PinInfo.PinType = Pin->PinType.PinCategory.ToString();
 			PinInfo.bIsInput = (Pin->Direction == EGPD_Input);
 			PinInfo.bIsConnected = Pin->LinkedTo.Num() > 0;
-			PinInfo.DefaultValue = Pin->DefaultValue;
+			PinInfo.DefaultValue = GetPinDefaultValueString(Pin);
 			NodeInfo.Pins.Add(PinInfo);
 		}
 
@@ -4782,7 +4809,7 @@ TArray<FBlueprintPinInfo> UBlueprintService::GetNodePins(
 		PinInfo.PinType = Pin->PinType.PinCategory.ToString();
 		PinInfo.bIsInput = (Pin->Direction == EGPD_Input);
 		PinInfo.bIsConnected = Pin->LinkedTo.Num() > 0;
-		PinInfo.DefaultValue = Pin->DefaultValue;
+		PinInfo.DefaultValue = GetPinDefaultValueString(Pin);
 
 		PinInfos.Add(PinInfo);
 	}
@@ -5848,7 +5875,7 @@ bool UBlueprintService::GetNodeDetails(
 		PinInfo.bIsHidden = Pin->bHidden;
 		PinInfo.bIsArray = Pin->PinType.ContainerType == EPinContainerType::Array;
 		PinInfo.bIsReference = Pin->PinType.bIsReference;
-		PinInfo.DefaultValue = Pin->DefaultValue;
+		PinInfo.DefaultValue = GetPinDefaultValueString(Pin);
 		PinInfo.Tooltip = Pin->PinToolTip;
 
 		// Check if can split
@@ -9547,15 +9574,16 @@ bool UBlueprintService::GetGraphDefinition(
 		// Collect non-default pin values
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
+			const FString EffectiveDefaultValue = GetPinDefaultValueString(Pin);
 			if (Pin && Pin->Direction == EGPD_Input &&
-				!Pin->DefaultValue.IsEmpty() &&
+				!EffectiveDefaultValue.IsEmpty() &&
 				Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec &&
 				Pin->LinkedTo.Num() == 0)
 			{
 				FGraphPinDefaultDesc PinDefault;
 				PinDefault.NodeRef = Desc.Ref;
 				PinDefault.PinName = Pin->PinName.ToString();
-				PinDefault.Value = Pin->DefaultValue;
+				PinDefault.Value = EffectiveDefaultValue;
 				OutPinDefaults.Add(PinDefault);
 			}
 		}

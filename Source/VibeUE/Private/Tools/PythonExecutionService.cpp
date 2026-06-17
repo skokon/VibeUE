@@ -15,6 +15,13 @@
 // UE5 assert exception code (check() failures raise this via RaiseException)
 static constexpr DWORD UE_ASSERT_EXCEPTION_CODE = 0x4000;
 
+// Tracks whether a hard crash (SEH-caught access violation or assertion) has happened during
+// Python execution this editor session. An access violation cannot be safely recovered in-process
+// — the CPython runtime state is undefined afterwards — so once this is set we tell the caller to
+// restart the editor instead of letting every later call fail with the same cryptic error.
+// Cleared whenever a command completes without a hard crash (the interpreter is proven alive).
+static bool GbPythonInterpreterCrashed = false;
+
 // Mirror UE5's FAssertInfo struct layout (defined in WindowsPlatformCrashContext.cpp)
 struct FVibeUEAssertInfo
 {
@@ -217,7 +224,26 @@ TResult<FPythonExecutionResult> FPythonExecutionService::ExecuteCode(
 		{
 			CrashMessage = FString::Printf(TEXT("Python execution caused a crash (exception code: 0x%08X). The Python code may have accessed invalid memory."), SEHResult.ExceptionCode);
 		}
+
+		// A caught access violation / assertion leaves the CPython runtime in an undefined state;
+		// it cannot be reinitialized in-process. Give the caller actionable guidance instead of
+		// letting subsequent calls fail identically with no explanation.
+		if (GbPythonInterpreterCrashed)
+		{
+			CrashMessage += TEXT(" NOTE: the Python interpreter has now crashed more than once this session and is unrecoverable in-process — restart the editor (BuildAndLaunch) to restore Python execution.");
+		}
+		else
+		{
+			CrashMessage += TEXT(" NOTE: the interpreter may now be unstable; if further commands keep failing identically, restart the editor (BuildAndLaunch).");
+		}
+		GbPythonInterpreterCrashed = true;
+
 		UE_LOG(LogTemp, Error, TEXT("%s"), *CrashMessage);
+	}
+	else
+	{
+		// Completed without a hard crash (a normal Python exception is fine) — interpreter is alive.
+		GbPythonInterpreterCrashed = false;
 	}
 #else
 	// Non-Windows platforms - use regular try/catch
@@ -440,7 +466,17 @@ FPythonExecutionResult FPythonExecutionService::ConvertExecutionResult(
 			}
 			Result.Output += LogOutput;
 		}
-		else if (LogEntry.Type == EPythonLogOutputType::Error || LogEntry.Type == EPythonLogOutputType::Warning)
+		else if (LogEntry.Type == EPythonLogOutputType::Warning)
+		{
+			// Warnings (e.g. DeprecationWarning) must not fail the execution —
+			// the code ran. Surface them in the output so callers still see them.
+			if (!Result.Output.IsEmpty())
+			{
+				Result.Output += TEXT("\n");
+			}
+			Result.Output += FString::Printf(TEXT("[warning] %s"), *LogOutput);
+		}
+		else if (LogEntry.Type == EPythonLogOutputType::Error)
 		{
 			bHasError = true;
 			if (!Result.ErrorMessage.IsEmpty())
@@ -507,37 +543,45 @@ TResult<void> FPythonExecutionService::ValidateCode(const FString& Code)
 
 FString FPythonExecutionService::ParsePythonException(const FString& Traceback)
 {
-	// Simple traceback parsing - extract the most relevant error info
+	// Keep the traceback intact: the line number and source context are what the
+	// caller needs to fix the code. Reducing it to the last non-empty line used to
+	// produce useless messages like "^" (the caret marker of a SyntaxError).
 	TArray<FString> Lines;
 	Traceback.ParseIntoArrayLines(Lines);
 
-	FString ParsedError;
-
-	// Look for the actual error line (usually the last non-empty line)
-	for (int32 i = Lines.Num() - 1; i >= 0; --i)
+	// Drop leading/trailing blank lines, cap very deep tracebacks to the tail
+	// (the exception line and innermost frames are at the end).
+	int32 FirstLine = 0;
+	while (FirstLine < Lines.Num() && Lines[FirstLine].TrimStartAndEnd().IsEmpty())
 	{
-		FString Line = Lines[i].TrimStartAndEnd();
-		if (!Line.IsEmpty())
-		{
-			ParsedError = Line;
-			break;
-		}
+		++FirstLine;
+	}
+	int32 LastLine = Lines.Num() - 1;
+	while (LastLine >= FirstLine && Lines[LastLine].TrimStartAndEnd().IsEmpty())
+	{
+		--LastLine;
 	}
 
-	// If we couldn't parse it, return the full traceback
-	if (ParsedError.IsEmpty())
+	if (FirstLine > LastLine)
 	{
 		return Traceback;
 	}
 
-	// Add context if we found an error
-	if (Lines.Num() > 2)
+	constexpr int32 MaxLines = 40;
+	FString ParsedError;
+	if (LastLine - FirstLine + 1 > MaxLines)
 	{
-		FString LastLine = Lines.Last().TrimStartAndEnd();
-		if (!LastLine.IsEmpty() && LastLine != ParsedError)
+		ParsedError = TEXT("[traceback truncated]");
+		FirstLine = LastLine - MaxLines + 1;
+	}
+
+	for (int32 i = FirstLine; i <= LastLine; ++i)
+	{
+		if (!ParsedError.IsEmpty())
 		{
-			ParsedError = FString::Printf(TEXT("%s\n%s"), *ParsedError, *LastLine);
+			ParsedError += TEXT("\n");
 		}
+		ParsedError += Lines[i].TrimEnd();
 	}
 
 	return ParsedError;

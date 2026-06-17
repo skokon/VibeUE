@@ -35,6 +35,29 @@ struct FBlueprintVariableInfo
 };
 
 /**
+ * Information about a single UEdGraph attached to a Blueprint.
+ * Returned by ListGraphs — one entry per graph tab visible in the
+ * Blueprint editor (ubergraph pages, functions, macros, delegate signatures).
+ */
+USTRUCT(BlueprintType)
+struct FBlueprintGraphInfo
+{
+	GENERATED_BODY()
+
+	/** Tab name as shown in the My Blueprint panel (e.g. "EventGraph", "Graph_PlayerInput", "MyFunction") */
+	UPROPERTY(BlueprintReadWrite, Category = "Blueprint")
+	FString GraphName;
+
+	/** "Ubergraph" | "Function" | "Macro" | "DelegateSignature" */
+	UPROPERTY(BlueprintReadWrite, Category = "Blueprint")
+	FString GraphKind;
+
+	/** Number of nodes in this graph (cheap to compute, useful as a sanity signal) */
+	UPROPERTY(BlueprintReadWrite, Category = "Blueprint")
+	int32 NodeCount = 0;
+};
+
+/**
  * Detailed information about a blueprint variable (for get_info action)
  */
 USTRUCT(BlueprintType)
@@ -986,6 +1009,26 @@ public:
 	static TArray<FBlueprintFunctionInfo> ListFunctions(const FString& BlueprintPath);
 
 	/**
+	 * Enumerate every UEdGraph attached to a Blueprint — ubergraph pages, functions,
+	 * macros, and delegate signature graphs.
+	 *
+	 * Use this when you don't know the exact name of a graph tab. The default
+	 * Blueprint editor only exposes "EventGraph" by name; user-created ubergraph
+	 * pages (e.g. "Graph_PlayerInput") and inherited function graphs are invisible
+	 * without this enumeration.
+	 *
+	 * @param BlueprintPath - Full path to the blueprint (e.g., "/Game/Blueprints/BP_Player_Test")
+	 * @return Array of FBlueprintGraphInfo, one per graph
+	 *
+	 * Example:
+	 *   graphs = unreal.BlueprintService.list_graphs("/Game/Blueprints/BP_Player_Test")
+	 *   for g in graphs:
+	 *       print(f"{g.graph_kind:20}  {g.graph_name:30}  ({g.node_count} nodes)")
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
+	static TArray<FBlueprintGraphInfo> ListGraphs(const FString& BlueprintPath);
+
+	/**
 	 * Open a blueprint and navigate to a specific function graph.
 	 * Opens the blueprint editor and focuses on the specified function tab.
 	 *
@@ -1063,8 +1106,8 @@ public:
 	 * @return True if successful
 	 *
 	 * Example:
-	 *   success, info = unreal.BlueprintService.get_component_info("StaticMeshComponent")
-	 *   if success:
+	 *   info = unreal.BlueprintService.get_component_info("StaticMeshComponent")  # ComponentDetailedInfo or None
+	 *   if info:
 	 *       print(f"Properties: {info.property_count}, Functions: {info.function_count}")
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints|Components")
@@ -1124,7 +1167,7 @@ public:
 	 * @return True if successful
 	 *
 	 * Example:
-	 *   success, value = unreal.BlueprintService.get_component_property("/Game/BP_Player", "Mesh", "RelativeLocation")
+	 *   value = unreal.BlueprintService.get_component_property("/Game/BP_Player", "Mesh", "RelativeLocation")  # str or None
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints|Components")
 	static bool GetComponentProperty(
@@ -1334,8 +1377,8 @@ public:
 	 * @return True if successful
 	 *
 	 * Example:
-	 *   success, info = unreal.BlueprintService.get_variable_info("/Game/BP_Player", "Health")
-	 *   if success:
+	 *   info = unreal.BlueprintService.get_variable_info("/Game/BP_Player", "Health")  # BlueprintVariableDetailedInfo or None
+	 *   if info:
 	 *       print(f"Type: {info.variable_type}, Category: {info.category}")
 	 *       print(f"Replication: {info.replication_condition}")
 	 */
@@ -1536,6 +1579,31 @@ public:
 	);
 
 	/**
+	 * Add a macro graph to a Blueprint (typically a Macro Library Blueprint).
+	 *
+	 * Macro graphs are referenced by K2Node_MacroInstance nodes via add_macro_instance_node.
+	 * Use this to create the macro graph, then reference it with the full path format:
+	 *   "/Game/MyMacroLib.MyMacroLib:MyMacroName"
+	 *
+	 * To create a Macro Library Blueprint from Python:
+	 *   factory = unreal.BlueprintMacroFactory()
+	 *   factory.set_editor_property("parent_class", unreal.Actor.static_class())
+	 *   tools = unreal.AssetToolsHelpers.get_asset_tools()
+	 *   tools.create_asset("BPMacroLib", "/Game/Macros", unreal.Blueprint, factory)
+	 *
+	 * Note: do NOT use create_function() on a Macro Library — it asserts in the K2 schema.
+	 *
+	 * @param BlueprintPath - Full path to the target Blueprint
+	 * @param MacroName     - Name for the new macro graph
+	 * @return True if successful (idempotent — returns true if the macro already exists)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
+	static bool CreateMacroGraph(
+		const FString& BlueprintPath,
+		const FString& MacroName
+	);
+
+	/**
 	 * Add a parameter to a function.
 	 *
 	 * @param BlueprintPath - Full path to the blueprint
@@ -1602,7 +1670,7 @@ public:
 	 * Example:
 	 *   params = unreal.BlueprintService.get_function_parameters("/Game/BP_Player", "ApplyDamage")
 	 *   for param in params:
-	 *       print(f"{param.parameter_name}: {param.parameter_type} (output={param.b_is_output})")
+	 *       print(f"{param.parameter_name}: {param.parameter_type} (output={param.is_output})")
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
 	static TArray<FBlueprintFunctionParameterInfo> GetFunctionParameters(
@@ -1635,9 +1703,9 @@ public:
 	 * @return True if successful
 	 *
 	 * Example:
-	 *   success, info = unreal.BlueprintService.get_function_info("/Game/BP_Player", "ApplyDamage")
-	 *   if success:
-	 *       print(f"Nodes: {info.node_count}, Pure: {info.b_is_pure}")
+	 *   info = unreal.BlueprintService.get_function_info("/Game/BP_Player", "ApplyDamage")  # detailed info struct or None
+	 *   if info:
+	 *       print(f"Nodes: {info.node_count}, Pure: {info.is_pure}")
 	 *       for param in info.input_parameters:
 	 *           print(f"  Input: {param.parameter_name}: {param.parameter_type}")
 	 */
@@ -2685,6 +2753,42 @@ public:
 	);
 
 	/**
+	 * Add a macro instance node to a Blueprint graph.
+	 *
+	 * Creates a K2Node_MacroInstance wired to the specified macro graph so it exposes the
+	 * correct exec and data pins at compile time. This is the only reliable path for placing
+	 * macro nodes from Python — create_node_by_key("NODE K2Node_MacroInstance") produces a
+	 * husk with no pins because MacroGraphReference cannot be set through UObject reflection.
+	 *
+	 * @param BlueprintPath - Full path to the target blueprint
+	 * @param GraphName     - Name of the graph to place the node in
+	 * @param MacroPath     - Shorthand name OR full "AssetPath.AssetName:MacroGraphName" string.
+	 *                        Supported shorthands (Standard Macros library):
+	 *                          ForEachLoop, ForEachLoopWithBreak, ReverseForEachLoop,
+	 *                          ForLoop, ForLoopWithBreak, WhileLoop,
+	 *                          IsValid, Gate, DoOnce, DoN, FlipFlop
+	 *                        Note: IsNotValid is not a separate macro — use IsValid and wire the
+	 *                        "Is Not Valid" exec output. MultiGate is K2Node_MultiGate, not a macro.
+	 * @param PosX          - X position in the graph
+	 * @param PosY          - Y position in the graph
+	 * @return Node ID (GUID) if successful, empty string otherwise
+	 *
+	 * Example - Iterate an array:
+	 *   node_id = unreal.BlueprintService.add_macro_instance_node("/Game/BP_Player", "EventGraph", "ForEachLoop", 200, 100)
+	 *
+	 * Example - Full path (custom macro in a user blueprint):
+	 *   node_id = unreal.BlueprintService.add_macro_instance_node("/Game/BP_Player", "EventGraph", "/Game/BP_Macros.BP_Macros:MyMacro", 200, 100)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
+	static FString AddMacroInstanceNode(
+		const FString& BlueprintPath,
+		const FString& GraphName,
+		const FString& MacroPath,
+		float PosX = 0.0f,
+		float PosY = 0.0f
+	);
+
+	/**
 	 * Convenience: call a function off of a Blueprint variable in one shot.
 	 *
 	 * Resolves the variable's type to its owner class, creates a Get node for the
@@ -2729,7 +2833,11 @@ public:
 	 *
 	 * @param BlueprintPath - Full path to the blueprint
 	 * @param GraphName - Name of the graph (e.g. "EventGraph")
-	 * @param TargetClass - Class that owns the delegate. Use "Self" or "" for the blueprint's own class.
+	 * @param TargetClass - Class that owns the delegate. Accepts:
+	 *   - "Self" or "" for the blueprint's own class
+	 *   - A native class name with or without U/A prefix (e.g. "Actor", "UButton")
+	 *   - A Blueprint asset path (e.g. "/Game/StateTree/BP_Cube")
+	 *   - A short Blueprint name with or without _C suffix (e.g. "BP_Cube", "BP_Cube_C")
 	 * @param DelegateName - Name of the multicast delegate property (e.g. "OnActorBeginOverlap")
 	 * @param PosX - X position in the graph
 	 * @param PosY - Y position in the graph
@@ -2738,12 +2846,56 @@ public:
 	 * Example:
 	 *   node_id = unreal.BlueprintService.add_delegate_bind_node("/Game/BP_Player", "EventGraph", "Self", "OnDamageTaken", 200, 100)
 	 *   node_id = unreal.BlueprintService.add_delegate_bind_node("/Game/WBP_HUD", "EventGraph", "UButton", "OnClicked", 300, 200)
+	 *   node_id = unreal.BlueprintService.add_delegate_bind_node("/Game/STT_LookAt", "EventGraph", "BP_Cube", "FinishedLooking", 960, 0)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
 	static FString AddDelegateBindNode(
 		const FString& BlueprintPath,
 		const FString& GraphName,
 		const FString& TargetClass,
+		const FString& DelegateName,
+		float PosX = 0.0f,
+		float PosY = 0.0f
+	);
+
+	/**
+	 * Convenience: bind to an event dispatcher declared on a Blueprint variable's class in one shot.
+	 *
+	 * Resolves the variable's type to its owner class (e.g. variable "Cube : BP_Cube_C" -> BP_Cube_C),
+	 * finds the named multicast delegate on that class, creates a "Bind Event to <Delegate>" node and
+	 * a Get node for the variable, and wires the variable's output pin into the bind node's Target (self).
+	 *
+	 * The variable must be an object-reference type (UObject subclass). For inherited variables the
+	 * owner class is read from the GeneratedClass property, so this works for variables defined on
+	 * parent classes too.
+	 *
+	 * After calling this you still need to:
+	 *   - Wire the bind node's exec input ("execute") from your upstream node
+	 *   - Wire a Custom Event's "OutputDelegate" pin into the bind node's "Delegate" pin
+	 *
+	 * @param BlueprintPath - Full path to the blueprint that contains the graph
+	 * @param GraphName     - Name of the graph (e.g. "EventGraph")
+	 * @param VariableName  - Variable on this blueprint whose type owns the event dispatcher
+	 * @param DelegateName  - Multicast delegate (event dispatcher) on the variable's class
+	 * @param PosX          - X position for the bind node
+	 * @param PosY          - Y position for the bind node
+	 * @return Node ID (GUID) of the bind node if successful, empty string otherwise
+	 *
+	 * Example:
+	 *   # Cube is a BP_Cube_C variable on STT_LookInRandomDirection.
+	 *   # BP_Cube has an event dispatcher "FinishedLooking".
+	 *   bind_id = unreal.BlueprintService.add_delegate_bind_on_variable(
+	 *       "/Game/StateTree/Tasks/STT_LookInRandomDirection",
+	 *       "EventGraph",
+	 *       "Cube",
+	 *       "FinishedLooking",
+	 *       960, 0)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
+	static FString AddDelegateBindOnVariable(
+		const FString& BlueprintPath,
+		const FString& GraphName,
+		const FString& VariableName,
 		const FString& DelegateName,
 		float PosX = 0.0f,
 		float PosY = 0.0f
@@ -2942,6 +3094,7 @@ public:
 	 * @param BlueprintName - Name of the blueprint to create
 	 * @param ParentClass - Parent class name or path (e.g., "Actor", "Character", "StateTreeTaskBlueprintBase", "/Script/Engine.Actor")
 	 *                      Short names like "StateTreeTaskBlueprintBase" are resolved via object search across all loaded modules.
+	 *                      UserWidget-derived parents create a WidgetBlueprint (UMG factory) automatically.
 	 *                      Returns empty string (error) if the class cannot be found.
 	 * @param BlueprintPath - Directory path where blueprint will be created (e.g., "/Game/Blueprints")
 	 * @return Full path to created blueprint, or empty string on failure
@@ -2949,6 +3102,7 @@ public:
 	 * Example:
 	 *   path = unreal.BlueprintService.create_blueprint("BP_MyActor", "Actor", "/Game/Blueprints")
 	 *   path = unreal.BlueprintService.create_blueprint("STT_MyTask", "StateTreeTaskBlueprintBase", "/Game/StateTree")
+	 *   path = unreal.BlueprintService.create_blueprint("WBP_MyWidget", "UserWidget", "/Game/UI")
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
 	static FString CreateBlueprint(
@@ -2965,7 +3119,7 @@ public:
 	 *
 	 * Example:
 	 *   result = unreal.BlueprintService.compile_blueprint("/Game/BP_Player")
-	 *   print(f"Success: {result.b_success}, Errors: {result.num_errors}")
+	 *   print(f"Success: {result.success}, Errors: {result.num_errors}")
 	 *   for err in result.errors:
 	 *       print(f"  ERROR: {err}")
 	 */
@@ -2980,8 +3134,10 @@ public:
 	 * @param OutValue - Property value as a string (C++ only, becomes return value in Python)
 	 * @return True if successful
 	 *
-	 * Python Usage (out params become return values):
-	 *   success, value = unreal.BlueprintService.get_property("/Game/BP_Player", "Health")
+	 * Python Usage — bool + out param collapse into ONE return value (str or None, NOT a tuple):
+	 *   value = unreal.BlueprintService.get_property("/Game/BP_Player", "Health")   # e.g. "150.0", or None if not found
+	 * Use the native C++ property name: booleans KEEP the 'b' prefix here ("bReplicates"),
+	 * unlike Python attribute access which strips it. Values come back as strings ("True"/"False").
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
 	static bool GetProperty(
@@ -3084,8 +3240,8 @@ public:
 	 * @return True if successful
 	 *
 	 * Example:
-	 *   success, info = unreal.BlueprintService.get_node_details("/Game/BP_Player", "EventGraph", node_id)
-	 *   if success:
+	 *   info = unreal.BlueprintService.get_node_details("/Game/BP_Player", "EventGraph", node_id)  # detailed info struct or None
+	 *   if info:
 	 *       for pin in info.input_pins:
 	 *           print(f"  {pin.pin_name}: {pin.pin_category}")
 	 */
@@ -3267,7 +3423,11 @@ public:
 	/**
 	 * Set a component as the root component of the blueprint.
 	 * The component must be a SceneComponent and must exist in the blueprint.
-	 * The previous root's children will be reparented to the new root.
+	 * The previous root's children are reparented to the new root. If the previous root was
+	 * the auto-generated DefaultSceneRoot it is removed entirely (matching the Blueprint
+	 * editor); a previous user-created root becomes a child of the new root. Any other
+	 * root-level scene components are also folded under the new root, since an actor has
+	 * exactly one scene root.
 	 *
 	 * @param BlueprintPath - Full path to the blueprint
 	 * @param ComponentName - Name of the component to make root
@@ -3294,10 +3454,10 @@ public:
 	 * @return True if comparison succeeded (even if no differences)
 	 *
 	 * Example:
-	 *   success, diff = unreal.BlueprintService.compare_components(
+	 *   diff = unreal.BlueprintService.compare_components(
 	 *       "/Game/BP_Player", "Mesh",
 	 *       "/Game/BP_Enemy", "Mesh"
-	 *   )
+	 *   )  # str or None
 	 *   print(diff)  # Shows property differences
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints|Components")
@@ -3440,7 +3600,7 @@ public:
 	 * Example:
 	 *   funcs = unreal.BlueprintService.list_overridable_functions("/Game/StateTree/STT_Rotate")
 	 *   for f in funcs:
-	 *       print(f"{f.function_name} ({f.owner_class}) overridden={f.b_already_overridden}")
+	 *       print(f"{f.function_name} ({f.owner_class}) overridden={f.already_overridden}")
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints|Functions")
 	static TArray<FOverridableFunctionInfo> ListOverridableFunctions(const FString& BlueprintPath);
@@ -3572,6 +3732,40 @@ public:
 		TArray<FGraphConnectionDesc>& OutConnections,
 		TArray<FGraphPinDefaultDesc>& OutPinDefaults,
 		FString& OutError
+	);
+
+	/**
+	 * Add a Blueprint Interface to a blueprint.
+	 * Equivalent to: Class Settings → Interfaces → Add in the editor.
+	 *
+	 * @param BlueprintPath - Full path to the blueprint
+	 * @param InterfacePath - Interface asset path or short name (e.g., "BPI_TestInterface" or "/Game/interface/BPI_TestInterface")
+	 * @return True if the interface was added successfully (or already implemented)
+	 *
+	 * Example:
+	 *   unreal.BlueprintService.add_interface("/Game/BP_Player", "BPI_TestInterface")
+	 *   unreal.BlueprintService.add_interface("/Game/BP_Player", "/Game/interface/BPI_TestInterface")
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
+	static bool AddInterface(
+		const FString& BlueprintPath,
+		const FString& InterfacePath
+	);
+
+	/**
+	 * Remove a Blueprint Interface from a blueprint.
+	 *
+	 * @param BlueprintPath - Full path to the blueprint
+	 * @param InterfacePath - Interface asset path or short name
+	 * @return True if the interface was removed successfully
+	 *
+	 * Example:
+	 *   unreal.BlueprintService.remove_interface("/Game/BP_Player", "BPI_TestInterface")
+	 */
+	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
+	static bool RemoveInterface(
+		const FString& BlueprintPath,
+		const FString& InterfacePath
 	);
 
 private:

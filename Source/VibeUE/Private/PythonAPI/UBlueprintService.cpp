@@ -36,6 +36,7 @@
 #include "Curves/CurveVector.h"          // For UCurveVector (timeline vector tracks)
 #include "Curves/CurveLinearColor.h"     // For UCurveLinearColor (timeline color tracks)
 #include "EdGraphNode_Comment.h"         // For UEdGraphNode_Comment (comment box nodes)
+#include "K2Node_MacroInstance.h"        // For UK2Node_MacroInstance (add_macro_instance_node)
 #include "InputAction.h"                 // For UInputAction
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetMathLibrary.h"
@@ -53,6 +54,8 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 #include "Factories/BlueprintFactory.h"
+#include "WidgetBlueprintFactory.h"      // For creating WidgetBlueprints (UBlueprintFactory can't)
+#include "Blueprint/UserWidget.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "SubobjectDataSubsystem.h"
 // For BlueprintActionDatabase - proper node discovery
@@ -573,6 +576,47 @@ TArray<FBlueprintFunctionInfo> UBlueprintService::ListFunctions(const FString& B
 	return Functions;
 }
 
+TArray<FBlueprintGraphInfo> UBlueprintService::ListGraphs(const FString& BlueprintPath)
+{
+	TArray<FBlueprintGraphInfo> Graphs;
+
+	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UBlueprintService::ListGraphs: Failed to load blueprint: %s"), *BlueprintPath);
+		return Graphs;
+	}
+
+	// Emit one FBlueprintGraphInfo per graph in a given collection
+	auto AppendGraphs = [&Graphs](const TArray<UEdGraph*>& Source, const TCHAR* Kind)
+	{
+		for (UEdGraph* Graph : Source)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			FBlueprintGraphInfo Info;
+			Info.GraphName = Graph->GetName();
+			Info.GraphKind = Kind;
+			Info.NodeCount = Graph->Nodes.Num();
+			Graphs.Add(MoveTemp(Info));
+		}
+	};
+
+	// UbergraphPages = the event-graph tabs (default "EventGraph" + any user-added pages).
+	// FunctionGraphs = user functions, overrides, and auto-generated input event functions.
+	// MacroGraphs   = blueprint macros.
+	// DelegateSignatureGraphs = event dispatcher signature graphs.
+	AppendGraphs(Blueprint->UbergraphPages,          TEXT("Ubergraph"));
+	AppendGraphs(Blueprint->FunctionGraphs,          TEXT("Function"));
+	AppendGraphs(Blueprint->MacroGraphs,             TEXT("Macro"));
+	AppendGraphs(Blueprint->DelegateSignatureGraphs, TEXT("DelegateSignature"));
+
+	return Graphs;
+}
+
 bool UBlueprintService::OpenFunctionGraph(const FString& BlueprintPath, const FString& FunctionName)
 {
 	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
@@ -657,6 +701,22 @@ bool UBlueprintService::OpenFunctionGraph(const FString& BlueprintPath, const FS
 	return true;
 }
 
+// The actual scene root is the first root-level scene component node that is not attached
+// to an inherited/native parent. GetDefaultSceneRootNode() only returns the auto-generated
+// DefaultSceneRoot, which is detached from the tree once a user scene component becomes root.
+static USCS_Node* FindActualSceneRootNode(USimpleConstructionScript* SCS)
+{
+	for (USCS_Node* Node : SCS->GetRootNodes())
+	{
+		if (Node && Node->ComponentClass && Node->ComponentClass->IsChildOf<USceneComponent>()
+			&& Node->ParentComponentOrVariableName == NAME_None)
+		{
+			return Node;
+		}
+	}
+	return nullptr;
+}
+
 TArray<FBlueprintComponentInfo> UBlueprintService::ListComponents(const FString& BlueprintPath)
 {
 	TArray<FBlueprintComponentInfo> Components;
@@ -672,6 +732,8 @@ TArray<FBlueprintComponentInfo> UBlueprintService::ListComponents(const FString&
 	{
 		return Components;
 	}
+
+	USCS_Node* ActualRootNode = FindActualSceneRootNode(SCS);
 
 	const TArray<USCS_Node*>& AllNodes = SCS->GetAllNodes();
 	for (USCS_Node* Node : AllNodes)
@@ -695,7 +757,7 @@ TArray<FBlueprintComponentInfo> UBlueprintService::ListComponents(const FString&
 			CompInfo.AttachParent = Node->ParentComponentOrVariableName.ToString();
 		}
 
-		CompInfo.bIsRootComponent = (Node == SCS->GetDefaultSceneRootNode());
+		CompInfo.bIsRootComponent = (Node == ActualRootNode);
 
 		// Get children
 		for (USCS_Node* ChildNode : Node->GetChildNodes())
@@ -835,8 +897,13 @@ TArray<FComponentTypeInfo> UBlueprintService::GetAvailableComponents(const FStri
 		Info.bIsPrimitiveComponent = Class->IsChildOf<UPrimitiveComponent>();
 		Info.bIsAbstract = Class->HasAnyClassFlags(CLASS_Abstract);
 		
-		// Get category from metadata
-		if (const FString* CategoryMeta = Class->FindMetaData(TEXT("Category")))
+		// Get category from metadata. Component grouping shown in the editor's Add Component
+		// menu lives in "ClassGroupNames" (e.g. "Lights"), not "Category".
+		if (const FString* GroupMeta = Class->FindMetaData(TEXT("ClassGroupNames")))
+		{
+			Info.Category = *GroupMeta;
+		}
+		else if (const FString* CategoryMeta = Class->FindMetaData(TEXT("Category")))
 		{
 			Info.Category = *CategoryMeta;
 		}
@@ -905,8 +972,12 @@ bool UBlueprintService::GetComponentInfo(const FString& ComponentType, FComponen
 	OutInfo.bIsSceneComponent = ComponentClass->IsChildOf<USceneComponent>();
 	OutInfo.bIsPrimitiveComponent = ComponentClass->IsChildOf<UPrimitiveComponent>();
 	
-	// Get category
-	if (const FString* CategoryMeta = ComponentClass->FindMetaData(TEXT("Category")))
+	// Get category — prefer the editor's component grouping ("ClassGroupNames", e.g. "Lights")
+	if (const FString* GroupMeta = ComponentClass->FindMetaData(TEXT("ClassGroupNames")))
+	{
+		OutInfo.Category = *GroupMeta;
+	}
+	else if (const FString* CategoryMeta = ComponentClass->FindMetaData(TEXT("Category")))
 	{
 		OutInfo.Category = *CategoryMeta;
 	}
@@ -1405,7 +1476,7 @@ bool UBlueprintService::SetRootComponent(
 	
 	// Find the component node to make root
 	USCS_Node* NewRootNode = nullptr;
-	USCS_Node* CurrentRootNode = SCS->GetDefaultSceneRootNode();
+	USCS_Node* CurrentRootNode = FindActualSceneRootNode(SCS);
 	
 	for (USCS_Node* Node : SCS->GetAllNodes())
 	{
@@ -1477,7 +1548,11 @@ bool UBlueprintService::SetRootComponent(
 		// It might be a root node itself, remove it from root nodes
 		SCS->RemoveNode(NewRootNode);
 	}
-	
+
+	// Add new root as a root node FIRST, so scene-root validation never resurrects
+	// the auto-generated DefaultSceneRoot while the old root is being detached below.
+	SCS->AddNode(NewRootNode);
+
 	// If there was a current root, we need to handle it
 	if (CurrentRootNode && CurrentRootNode != NewRootNode)
 	{
@@ -1489,18 +1564,19 @@ bool UBlueprintService::SetRootComponent(
 				CurrentRootNode->RemoveChildNode(Child);
 			}
 		}
-		
-		// Detach the current root from being THE root  
-		// Make the old root a child of the new root
+
 		SCS->RemoveNode(CurrentRootNode);
-		NewRootNode->AddChildNode(CurrentRootNode);
-		// CRITICAL: Call SetParent to properly set ParentComponentOrVariableName
-		CurrentRootNode->SetParent(NewRootNode);
+		if (CurrentRootNode != SCS->GetDefaultSceneRootNode())
+		{
+			// Make the old user-created root a child of the new root
+			NewRootNode->AddChildNode(CurrentRootNode);
+			// CRITICAL: Call SetParent to properly set ParentComponentOrVariableName
+			CurrentRootNode->SetParent(NewRootNode);
+		}
+		// The auto-generated DefaultSceneRoot is dropped outright (matching the Blueprint
+		// editor); the SCS recreates it automatically if the blueprint ever needs one again.
 	}
-	
-	// Add new root as a root node
-	SCS->AddNode(NewRootNode);
-	
+
 	// Reparent the old children (except the new root) to the new root
 	for (USCS_Node* Child : ChildrenToReparent)
 	{
@@ -1511,7 +1587,26 @@ bool UBlueprintService::SetRootComponent(
 			Child->SetParent(NewRootNode);
 		}
 	}
-	
+
+	// An actor has exactly one scene root: fold any other floating root-level scene
+	// components (e.g. siblings added at root level before this call) under the new root.
+	TArray<USCS_Node*> OtherSceneRoots;
+	for (USCS_Node* Node : SCS->GetRootNodes())
+	{
+		if (Node && Node != NewRootNode && Node != SCS->GetDefaultSceneRootNode()
+			&& Node->ComponentClass && Node->ComponentClass->IsChildOf<USceneComponent>()
+			&& Node->ParentComponentOrVariableName == NAME_None)
+		{
+			OtherSceneRoots.Add(Node);
+		}
+	}
+	for (USCS_Node* Node : OtherSceneRoots)
+	{
+		SCS->RemoveNode(Node);
+		NewRootNode->AddChildNode(Node);
+		Node->SetParent(NewRootNode);
+	}
+
 	// Mark blueprint as structurally modified
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 	
@@ -2498,6 +2593,46 @@ bool UBlueprintService::CreateFunction(
 	return true;
 }
 
+bool UBlueprintService::CreateMacroGraph(const FString& BlueprintPath, const FString& MacroName)
+{
+	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("CreateMacroGraph: Failed to load blueprint: %s"), *BlueprintPath);
+		return false;
+	}
+
+	// Idempotent — return true if the macro graph already exists
+	for (UEdGraph* Graph : Blueprint->MacroGraphs)
+	{
+		if (Graph && Graph->GetName() == MacroName)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("CreateMacroGraph: Macro '%s' already exists in %s"), *MacroName, *BlueprintPath);
+			return true;
+		}
+	}
+
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint,
+		FName(*MacroName),
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass()
+	);
+
+	if (!NewGraph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("CreateMacroGraph: Failed to create graph '%s' in %s"), *MacroName, *BlueprintPath);
+		return false;
+	}
+
+	NewGraph->bEditable = true;
+	FBlueprintEditorUtils::AddMacroGraph(Blueprint, NewGraph, /*bIsUserCreated=*/true, /*SignatureFromClass=*/nullptr);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	UE_LOG(LogTemp, Log, TEXT("CreateMacroGraph: Created macro '%s' in %s"), *MacroName, *BlueprintPath);
+	return true;
+}
+
 bool UBlueprintService::AddFunctionParameter(
 	const FString& BlueprintPath,
 	const FString& FunctionName,
@@ -3368,6 +3503,20 @@ FString UBlueprintService::AddGetVariableNode(
 	GetNode->PostPlacedNewNode();
 	GetNode->AllocateDefaultPins();
 
+	// Pin allocation fails silently when the variable property can't be resolved on the
+	// skeleton class (e.g. stale skeleton after recent variable/function edits). Returning a
+	// GUID for a pin-less node leaves a corrupt node every downstream connect call fails on.
+	if (GetNode->Pins.Num() == 0)
+	{
+		GetNode->ReconstructNode();
+	}
+	if (GetNode->Pins.Num() == 0)
+	{
+		Graph->RemoveNode(GetNode);
+		UE_LOG(LogTemp, Error, TEXT("AddGetVariableNode: Node for '%s' allocated zero pins (variable not resolvable on skeleton class) — node removed. Compile the blueprint and retry."), *VariableName);
+		return FString();
+	}
+
 	// Set position
 	GetNode->NodePosX = PosX;
 	GetNode->NodePosY = PosY;
@@ -3611,6 +3760,19 @@ FString UBlueprintService::AddSetVariableNode(
 	SetNode->CreateNewGuid();
 	SetNode->PostPlacedNewNode();
 	SetNode->AllocateDefaultPins();
+
+	// Set nodes always allocate exec pins, so the failure signature for an unresolvable
+	// variable property is a missing variable input pin rather than zero pins.
+	if (!SetNode->FindPin(FName(*VariableName)))
+	{
+		SetNode->ReconstructNode();
+	}
+	if (!SetNode->FindPin(FName(*VariableName)))
+	{
+		Graph->RemoveNode(SetNode);
+		UE_LOG(LogTemp, Error, TEXT("AddSetVariableNode: Node for '%s' has no variable pin (variable not resolvable on skeleton class) — node removed. Compile the blueprint and retry."), *VariableName);
+		return FString();
+	}
 
 	// Set position
 	SetNode->NodePosX = PosX;
@@ -5515,13 +5677,19 @@ FBlueprintCompileResult UBlueprintService::CompileBlueprint(const FString& Bluep
 
 	for (const TSharedRef<FTokenizedMessage>& Msg : CompileResults.Messages)
 	{
-		const FString MsgText = Msg->ToText().ToString();
+		FString MsgText = Msg->ToText().ToString();
 		if (Msg->GetSeverity() == EMessageSeverity::Error)
 		{
 			Result.Errors.Add(MsgText);
 		}
 		else if (Msg->GetSeverity() == EMessageSeverity::Warning || Msg->GetSeverity() == EMessageSeverity::PerformanceWarning)
 		{
+			// Agents repeatedly dismiss this warning as cosmetic; spell out the consequence
+			// inline because a function whose Return Node is never reached returns defaults.
+			if (MsgText.Contains(TEXT("Exec pin has no connections")))
+			{
+				MsgText += TEXT(" [MUST FIX: the execution chain never reaches this Return Node, so the function's outputs are NEVER set — wire Entry.then -> ... -> Result.execute before claiming success]");
+			}
 			Result.Warnings.Add(MsgText);
 		}
 	}
@@ -5680,6 +5848,104 @@ FString UBlueprintService::AddFunctionCallNode(
 	UE_LOG(LogTemp, Log, TEXT("AddFunctionCallNode: Added %s::%s to %s"), *FunctionOwnerClass, *FunctionName, *GraphName);
 
 	return CallNode->NodeGuid.ToString();
+}
+
+FString UBlueprintService::AddMacroInstanceNode(
+	const FString& BlueprintPath,
+	const FString& GraphName,
+	const FString& MacroPath,
+	float PosX,
+	float PosY)
+{
+	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddMacroInstanceNode: Failed to load blueprint: %s"), *BlueprintPath);
+		return FString();
+	}
+
+	UEdGraph* Graph = FindGraph(Blueprint, GraphName);
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddMacroInstanceNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
+		return FString();
+	}
+
+	// Resolve shorthand names to full asset:graph paths for the Standard Macros library
+	static const TMap<FString, FString> StandardMacroShorthands = {
+		{TEXT("ForEachLoop"),          TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:ForEachLoop")},
+		{TEXT("ForEachLoopWithBreak"), TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:ForEachLoopWithBreak")},
+		{TEXT("ReverseForEachLoop"),   TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:ReverseForEachLoop")},
+		{TEXT("ForLoop"),              TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:ForLoop")},
+		{TEXT("ForLoopWithBreak"),     TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:ForLoopWithBreak")},
+		{TEXT("WhileLoop"),            TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:WhileLoop")},
+		{TEXT("IsValid"),              TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:IsValid")},
+		{TEXT("Gate"),                 TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:Gate")},
+		{TEXT("DoOnce"),               TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:DoOnce")},
+		{TEXT("DoN"),                  TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:Do N")},
+		{TEXT("FlipFlop"),             TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros:FlipFlop")},
+	};
+
+	FString FullPath = MacroPath;
+	if (const FString* Resolved = StandardMacroShorthands.Find(MacroPath))
+	{
+		FullPath = *Resolved;
+	}
+
+	// Parse "AssetPath.AssetName:MacroGraphName"
+	FString AssetPath;
+	FString MacroGraphName;
+	if (!FullPath.Split(TEXT(":"), &AssetPath, &MacroGraphName))
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddMacroInstanceNode: MacroPath must be a shorthand or 'AssetPath:GraphName'. Got: %s"), *MacroPath);
+		return FString();
+	}
+
+	// Load the blueprint that contains the macro graphs
+	UBlueprint* MacroBP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetPath));
+	if (!MacroBP)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddMacroInstanceNode: Failed to load macro blueprint: %s"), *AssetPath);
+		return FString();
+	}
+
+	// Find the named macro graph
+	UEdGraph* MacroGraph = nullptr;
+	for (UEdGraph* Candidate : MacroBP->MacroGraphs)
+	{
+		if (Candidate && Candidate->GetFName() == FName(*MacroGraphName))
+		{
+			MacroGraph = Candidate;
+			break;
+		}
+	}
+
+	if (!MacroGraph)
+	{
+		TArray<FString> Available;
+		for (UEdGraph* Candidate : MacroBP->MacroGraphs)
+		{
+			if (Candidate) Available.Add(Candidate->GetName());
+		}
+		UE_LOG(LogTemp, Error, TEXT("AddMacroInstanceNode: Macro graph '%s' not found in %s. Available: [%s]"),
+			*MacroGraphName, *AssetPath, *FString::Join(Available, TEXT(", ")));
+		return FString();
+	}
+
+	UK2Node_MacroInstance* MacroNode = NewObject<UK2Node_MacroInstance>(Graph);
+	MacroNode->SetMacroGraph(MacroGraph);
+	Graph->AddNode(MacroNode, false, false);
+	MacroNode->CreateNewGuid();
+	MacroNode->PostPlacedNewNode();
+	MacroNode->AllocateDefaultPins();
+	MacroNode->NodePosX = PosX;
+	MacroNode->NodePosY = PosY;
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	UE_LOG(LogTemp, Log, TEXT("AddMacroInstanceNode: Created '%s' node (id: %s) in %s/%s"),
+		*MacroGraphName, *MacroNode->NodeGuid.ToString(), *BlueprintPath, *GraphName);
+
+	return MacroNode->NodeGuid.ToString();
 }
 
 FString UBlueprintService::AddFunctionCallOnVariable(
@@ -6339,24 +6605,48 @@ FString UBlueprintService::CreateBlueprint(
 		return FString();
 	}
 
-	// Create blueprint using BlueprintFactory
-	UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
-	Factory->ParentClass = ParentClassPtr;
+	// Create blueprint using the matching factory. UBlueprintFactory cannot create
+	// WidgetBlueprints — UserWidget-derived parents need UWidgetBlueprintFactory.
+	UBlueprint* NewBlueprint = nullptr;
+	if (ParentClassPtr->IsChildOf(UUserWidget::StaticClass()))
+	{
+		UWidgetBlueprintFactory* WidgetFactory = NewObject<UWidgetBlueprintFactory>();
+		WidgetFactory->ParentClass = ParentClassPtr;
 
-	UBlueprint* NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(
-		UBlueprint::StaticClass(),
-		Package,
-		*BlueprintName,
-		RF_Standalone | RF_Public,
-		nullptr,
-		GWarn
-	));
+		NewBlueprint = Cast<UBlueprint>(WidgetFactory->FactoryCreateNew(
+			UWidgetBlueprint::StaticClass(),
+			Package,
+			*BlueprintName,
+			RF_Standalone | RF_Public,
+			nullptr,
+			GWarn
+		));
+	}
+	else
+	{
+		UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
+		Factory->ParentClass = ParentClassPtr;
+
+		NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(
+			UBlueprint::StaticClass(),
+			Package,
+			*BlueprintName,
+			RF_Standalone | RF_Public,
+			nullptr,
+			GWarn
+		));
+	}
 
 	if (!NewBlueprint)
 	{
 		UE_LOG(LogTemp, Error, TEXT("CreateBlueprint: Factory failed to create blueprint '%s'"), *BlueprintName);
 		return FString();
 	}
+
+	// Compile immediately so the asset is never left in an uncompiled state. A freshly-created
+	// but uncompiled Widget Blueprint can stack-overflow a later save / thumbnail Slate prepass
+	// (the crash behind issue #435). Cheap for an empty blueprint and makes follow-up edits safe.
+	FKismetEditorUtilities::CompileBlueprint(NewBlueprint);
 
 	// Notify the asset registry
 	FAssetRegistryModule::AssetCreated(NewBlueprint);
@@ -8207,15 +8497,7 @@ FString UBlueprintService::AddDelegateBindNode(
 	}
 	else
 	{
-		OwnerClass = FindFirstObject<UClass>(*TargetClass, EFindFirstObjectOptions::ExactClass);
-		if (!OwnerClass)
-		{
-			OwnerClass = FindFirstObject<UClass>(*FString::Printf(TEXT("U%s"), *TargetClass), EFindFirstObjectOptions::ExactClass);
-		}
-		if (!OwnerClass)
-		{
-			OwnerClass = FindFirstObject<UClass>(*FString::Printf(TEXT("A%s"), *TargetClass), EFindFirstObjectOptions::ExactClass);
-		}
+		OwnerClass = ResolveClassByName(TargetClass);
 	}
 
 	if (!OwnerClass)
@@ -8253,6 +8535,141 @@ FString UBlueprintService::AddDelegateBindNode(
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 	UE_LOG(LogTemp, Log, TEXT("AddDelegateBindNode: Added bind node for %s::%s in %s"), *OwnerClass->GetName(), *DelegateName, *GraphName);
+
+	return DelegateNode->NodeGuid.ToString();
+}
+
+FString UBlueprintService::AddDelegateBindOnVariable(
+	const FString& BlueprintPath,
+	const FString& GraphName,
+	const FString& VariableName,
+	const FString& DelegateName,
+	float PosX,
+	float PosY)
+{
+	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddDelegateBindOnVariable: Failed to load blueprint: %s"), *BlueprintPath);
+		return FString();
+	}
+
+	UEdGraph* Graph = FindGraph(Blueprint, GraphName);
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddDelegateBindOnVariable: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
+		return FString();
+	}
+
+	if (!Blueprint->GeneratedClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddDelegateBindOnVariable: Blueprint '%s' has no GeneratedClass — compile it first"), *BlueprintPath);
+		return FString();
+	}
+
+	// Resolve the variable's owner class via its property on the GeneratedClass.
+	FProperty* VarProperty = Blueprint->GeneratedClass->FindPropertyByName(FName(*VariableName));
+	if (!VarProperty)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddDelegateBindOnVariable: Variable '%s' not found on %s"), *VariableName, *BlueprintPath);
+		return FString();
+	}
+
+	UClass* OwnerClass = nullptr;
+	if (FObjectProperty* ObjProp = CastField<FObjectProperty>(VarProperty))
+	{
+		OwnerClass = ObjProp->PropertyClass;
+	}
+	else if (FClassProperty* ClassProp = CastField<FClassProperty>(VarProperty))
+	{
+		OwnerClass = ClassProp->MetaClass;
+	}
+
+	if (!OwnerClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddDelegateBindOnVariable: Variable '%s' is not an object reference — cannot bind to a delegate on it"), *VariableName);
+		return FString();
+	}
+
+	// Find the multicast delegate on the owner class (case-insensitive).
+	FMulticastDelegateProperty* DelegateProp = nullptr;
+	for (TFieldIterator<FMulticastDelegateProperty> PropIt(OwnerClass); PropIt; ++PropIt)
+	{
+		if (PropIt->GetName().Equals(DelegateName, ESearchCase::IgnoreCase))
+		{
+			DelegateProp = *PropIt;
+			break;
+		}
+	}
+
+	if (!DelegateProp)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddDelegateBindOnVariable: Delegate '%s' not found on class '%s' (from variable '%s')"), *DelegateName, *OwnerClass->GetName(), *VariableName);
+		return FString();
+	}
+
+	// Create the bind node (Target is NOT self — it's the variable's class).
+	UK2Node_AddDelegate* DelegateNode = NewObject<UK2Node_AddDelegate>(Graph);
+	DelegateNode->SetFromProperty(DelegateProp, /*bSelfContext=*/false, OwnerClass);
+	Graph->AddNode(DelegateNode, false, false);
+	DelegateNode->CreateNewGuid();
+	DelegateNode->PostPlacedNewNode();
+	DelegateNode->AllocateDefaultPins();
+	DelegateNode->NodePosX = PosX;
+	DelegateNode->NodePosY = PosY;
+
+	// Create a Get node for the variable to the left of the bind node.
+	UK2Node_VariableGet* GetterNode = NewObject<UK2Node_VariableGet>(Graph);
+	GetterNode->VariableReference.SetSelfMember(FName(*VariableName));
+	Graph->AddNode(GetterNode, false, false);
+	GetterNode->CreateNewGuid();
+	GetterNode->PostPlacedNewNode();
+	GetterNode->AllocateDefaultPins();
+	GetterNode->NodePosX = PosX - 250.0f;
+	GetterNode->NodePosY = PosY + 16.0f;
+
+	// Wire variable output -> bind node's Target (self) pin.
+	UEdGraphPin* VarOutPin = nullptr;
+	for (UEdGraphPin* Pin : GetterNode->Pins)
+	{
+		if (Pin && Pin->Direction == EGPD_Output)
+		{
+			VarOutPin = Pin;
+			break;
+		}
+	}
+
+	UEdGraphPin* SelfPin = DelegateNode->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input);
+	if (!SelfPin)
+	{
+		// Fallback: first input object pin (some delegate node variants name it differently).
+		for (UEdGraphPin* Pin : DelegateNode->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object)
+			{
+				SelfPin = Pin;
+				break;
+			}
+		}
+	}
+
+	if (VarOutPin && SelfPin)
+	{
+		const UEdGraphSchema* Schema = Graph->GetSchema();
+		Schema->TryCreateConnection(VarOutPin, SelfPin);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AddDelegateBindOnVariable: Created nodes but could not auto-wire Target pin for %s::%s (var pin: %s, self pin: %s)"),
+			*OwnerClass->GetName(), *DelegateName,
+			VarOutPin ? TEXT("ok") : TEXT("missing"),
+			SelfPin ? TEXT("ok") : TEXT("missing"));
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	UE_LOG(LogTemp, Log, TEXT("AddDelegateBindOnVariable: %s::%s bound via variable '%s' in %s — bind=%s, getter=%s"),
+		*OwnerClass->GetName(), *DelegateName, *VariableName, *GraphName,
+		*DelegateNode->NodeGuid.ToString(), *GetterNode->NodeGuid.ToString());
 
 	return DelegateNode->NodeGuid.ToString();
 }
@@ -10906,6 +11323,161 @@ bool UBlueprintService::GetGraphDefinition(
 
 	UE_LOG(LogTemp, Log, TEXT("GetGraphDefinition: Exported %d nodes, %d connections, %d pin defaults from %s::%s"),
 		OutNodes.Num(), OutConnections.Num(), OutPinDefaults.Num(), *BlueprintPath, *GraphName);
+
+	return true;
+}
+
+bool UBlueprintService::AddInterface(
+	const FString& BlueprintPath,
+	const FString& InterfacePath)
+{
+	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddInterface: Failed to load blueprint: %s"), *BlueprintPath);
+		return false;
+	}
+
+	if (InterfacePath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddInterface: Interface path is empty"));
+		return false;
+	}
+
+	// Resolve interface class - try multiple strategies
+	UClass* InterfaceClass = nullptr;
+
+	// Strategy 1: Try loading as a Blueprint asset path
+	UBlueprint* InterfaceBP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *InterfacePath));
+	if (InterfaceBP)
+	{
+		InterfaceClass = InterfaceBP->GeneratedClass;
+	}
+
+	// Strategy 2: Try with _C suffix as a class path
+	if (!InterfaceClass)
+	{
+		FString ClassPath = InterfacePath;
+		if (!ClassPath.EndsWith(TEXT("_C")))
+		{
+			ClassPath = InterfacePath + TEXT(".") + FPaths::GetCleanFilename(InterfacePath) + TEXT("_C");
+		}
+		InterfaceClass = LoadClass<UObject>(nullptr, *ClassPath);
+	}
+
+	// Strategy 3: Search by short name across all loaded Blueprint assets
+	if (!InterfaceClass)
+	{
+		for (TObjectIterator<UBlueprint> It; It; ++It)
+		{
+			if (It->GetName().Equals(InterfacePath, ESearchCase::IgnoreCase) ||
+				It->GetName().Equals(InterfacePath.Replace(TEXT("/"), TEXT("")), ESearchCase::IgnoreCase))
+			{
+				if (It->BlueprintType == BPTYPE_Interface)
+				{
+					InterfaceClass = It->GeneratedClass;
+					UE_LOG(LogTemp, Log, TEXT("AddInterface: Resolved interface '%s' via object search to '%s'"), *InterfacePath, *It->GetPathName());
+					break;
+				}
+			}
+		}
+	}
+
+	if (!InterfaceClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddInterface: Interface '%s' not found. Provide the full asset path (e.g., /Game/interface/BPI_TestInterface)"), *InterfacePath);
+		return false;
+	}
+
+	// The resolved class must actually be an interface. Implementing a non-interface
+	// class and then compiling trips an engine assertion in the Kismet compiler
+	// (Interface->HasAnyClassFlags(CLASS_Interface)), which crashes the editor.
+	// Reject it here instead.
+	if (!InterfaceClass->HasAnyClassFlags(CLASS_Interface))
+	{
+		UE_LOG(LogTemp, Error, TEXT("AddInterface: '%s' resolves to '%s', which is not a Blueprint Interface. Provide a Blueprint Interface asset."),
+			*InterfacePath, *InterfaceClass->GetName());
+		return false;
+	}
+
+	// Check if interface is already implemented
+	for (const FBPInterfaceDescription& Desc : Blueprint->ImplementedInterfaces)
+	{
+		if (Desc.Interface == InterfaceClass)
+		{
+			UE_LOG(LogTemp, Log, TEXT("AddInterface: Interface '%s' is already implemented on '%s'"), *InterfaceClass->GetName(), *Blueprint->GetName());
+			return true;
+		}
+	}
+
+	// Add the interface
+	FTopLevelAssetPath InterfaceAssetPath = InterfaceClass->GetClassPathName();
+	FBlueprintEditorUtils::ImplementNewInterface(Blueprint, InterfaceAssetPath);
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	UE_LOG(LogTemp, Log, TEXT("AddInterface: Added interface '%s' to '%s'"),
+		*InterfaceClass->GetName(), *Blueprint->GetName());
+
+	return true;
+}
+
+bool UBlueprintService::RemoveInterface(
+	const FString& BlueprintPath,
+	const FString& InterfacePath)
+{
+	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
+	if (!Blueprint)
+	{
+		UE_LOG(LogTemp, Error, TEXT("RemoveInterface: Failed to load blueprint: %s"), *BlueprintPath);
+		return false;
+	}
+
+	if (InterfacePath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error, TEXT("RemoveInterface: Interface path is empty"));
+		return false;
+	}
+
+	// Find the interface in the implemented list
+	UClass* InterfaceClass = nullptr;
+	int32 FoundIndex = INDEX_NONE;
+
+	for (int32 i = 0; i < Blueprint->ImplementedInterfaces.Num(); ++i)
+	{
+		const FBPInterfaceDescription& Desc = Blueprint->ImplementedInterfaces[i];
+		if (Desc.Interface)
+		{
+			FString InterfaceName = Desc.Interface->GetName();
+			FString InterfacePkgPath = Desc.Interface->GetPathName();
+
+			if (InterfaceName.Equals(InterfacePath, ESearchCase::IgnoreCase) ||
+				InterfaceName.Equals(InterfacePath + TEXT("_C"), ESearchCase::IgnoreCase) ||
+				InterfacePkgPath.Contains(InterfacePath))
+			{
+				InterfaceClass = Desc.Interface;
+				FoundIndex = i;
+				break;
+			}
+		}
+	}
+
+	if (FoundIndex == INDEX_NONE)
+	{
+		UE_LOG(LogTemp, Error, TEXT("RemoveInterface: Interface '%s' not found on blueprint '%s'"), *InterfacePath, *Blueprint->GetName());
+		return false;
+	}
+
+	// Remove the interface
+	FTopLevelAssetPath InterfaceAssetPath = InterfaceClass->GetClassPathName();
+	FBlueprintEditorUtils::RemoveInterface(Blueprint, InterfaceAssetPath);
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	UE_LOG(LogTemp, Log, TEXT("RemoveInterface: Removed interface '%s' from '%s'"),
+		*InterfaceClass->GetName(), *Blueprint->GetName());
 
 	return true;
 }

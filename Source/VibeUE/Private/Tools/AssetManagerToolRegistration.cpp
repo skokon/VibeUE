@@ -127,6 +127,32 @@ static FString SerializeJson(const TSharedPtr<FJsonObject>& Obj)
 // Action handlers
 // ---------------------------------------------------------------------------
 
+// Unfiltered list/search over /Game can hit tens of thousands of assets, all of
+// which would be serialized into the LLM context. Cap the serialized array and
+// report the full count so callers know to narrow the query.
+static constexpr int32 DefaultMaxAssetResults = 200;
+
+static void AddCappedAssetArray(const TSharedPtr<FJsonObject>& Response, TArray<FAssetData>& Results, const TMap<FString, FString>& Params)
+{
+	const FString MaxStr = ExtractParam(Params, TEXT("max_results"));
+	int32 MaxResults = MaxStr.IsEmpty() ? DefaultMaxAssetResults : FCString::Atoi(*MaxStr);
+	if (MaxResults <= 0)
+	{
+		MaxResults = DefaultMaxAssetResults;
+	}
+
+	Response->SetNumberField(TEXT("count"), Results.Num());
+	if (Results.Num() > MaxResults)
+	{
+		Response->SetNumberField(TEXT("returned"), MaxResults);
+		Response->SetStringField(TEXT("truncated"), FString::Printf(
+			TEXT("Showing first %d of %d results. Narrow with 'asset_type' or a deeper 'path', or raise 'max_results'."),
+			MaxResults, Results.Num()));
+		Results.SetNum(MaxResults);
+	}
+	Response->SetArrayField(TEXT("assets"), AssetArrayToJson(Results));
+}
+
 static FString Action_Search(const TMap<FString, FString>& Params)
 {
 	FString SearchTerm = ExtractParam(Params, TEXT("search_term"));
@@ -136,10 +162,9 @@ static FString Action_Search(const TMap<FString, FString>& Params)
 
 	TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
 	Response->SetBoolField(TEXT("success"), true);
-	Response->SetNumberField(TEXT("count"), Results.Num());
 	Response->SetStringField(TEXT("search_term"), SearchTerm);
 	Response->SetStringField(TEXT("asset_type"),  AssetType);
-	Response->SetArrayField(TEXT("assets"), AssetArrayToJson(Results));
+	AddCappedAssetArray(Response, Results, Params);
 	return SerializeJson(Response);
 }
 
@@ -189,10 +214,9 @@ static FString Action_List(const TMap<FString, FString>& Params)
 
 	TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
 	Response->SetBoolField(TEXT("success"), true);
-	Response->SetNumberField(TEXT("count"), Results.Num());
 	Response->SetStringField(TEXT("path"),       Path);
 	Response->SetStringField(TEXT("asset_type"), AssetType);
-	Response->SetArrayField(TEXT("assets"), AssetArrayToJson(Results));
+	AddCappedAssetArray(Response, Results, Params);
 	return SerializeJson(Response);
 }
 
@@ -355,6 +379,44 @@ static FString Action_Delete(const TMap<FString, FString>& Params)
 	return SerializeJson(Response);
 }
 
+static FString Action_Import(const TMap<FString, FString>& Params)
+{
+	// Disk file path. Accept 'source_file_path' (preferred) or fall back to 'source_path'.
+	FString SourceFile = ExtractParam(Params, TEXT("source_file_path"));
+	if (SourceFile.IsEmpty()) { SourceFile = ExtractParam(Params, TEXT("source_path")); }
+	FString DestFolder = ExtractParam(Params, TEXT("destination_path"));
+	FString AssetName  = ExtractParam(Params, TEXT("asset_name"));
+
+	if (SourceFile.IsEmpty() || DestFolder.IsEmpty())
+	{
+		TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
+		Err->SetBoolField(TEXT("success"), false);
+		Err->SetStringField(TEXT("error"),
+			TEXT("'source_file_path' (disk path) and 'destination_path' (Content Browser folder, e.g. /Game/UI/Textures) are required for action 'import'"));
+		return SerializeJson(Err);
+	}
+
+	FString ImportError;
+	FString AssetPath = UAssetDiscoveryService::ImportAsset(SourceFile, DestFolder, AssetName, ImportError);
+
+	TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
+	const bool bOk = !AssetPath.IsEmpty();
+	Response->SetBoolField(TEXT("success"), bOk);
+	Response->SetStringField(TEXT("source_file_path"), SourceFile);
+	Response->SetStringField(TEXT("destination_path"), DestFolder);
+	if (bOk)
+	{
+		Response->SetStringField(TEXT("asset_path"), AssetPath);
+	}
+	else
+	{
+		Response->SetStringField(TEXT("error"), ImportError.IsEmpty()
+			? FString::Printf(TEXT("Failed to import '%s'"), *SourceFile)
+			: ImportError);
+	}
+	return SerializeJson(Response);
+}
+
 static FString Action_Help(const TMap<FString, FString>& Params)
 {
 	FString HelpAction = ExtractParam(Params, TEXT("help_action"));
@@ -379,7 +441,11 @@ static FString Action_Help(const TMap<FString, FString>& Params)
 REGISTER_VIBEUE_TOOL(manage_asset,
 	"PREFERRED tool for all asset operations — use this instead of Python AssetDiscoveryService calls. "
 	"Manages Unreal Engine assets: search by name/type, find by exact path, list by folder, open in editor, "
-	"save, save_all, duplicate, move, or delete. "
+	"save, save_all, duplicate, move, delete, or import an image file from disk. "
+	"\n\nIMPORTING FROM DISK: action='import' brings an image file on disk into the Content Browser as a Texture2D. "
+	"Use this instead of Python unreal.AssetTools import_asset_tasks / ImportAssets — those pump the task graph and crash "
+	"the editor when called from a tool. Supported formats: png, jpg, jpeg, bmp, tga, dds, exr, hdr, tiff, tif, psd, pcx.\n"
+	"  Import an image      : action='import', source_file_path='C:/Images/rocks.jpg', destination_path='/Game/UI/Textures', asset_name='T_Rocks'\n"
 	"\n\nWORKFLOW: Always search/find FIRST to confirm the exact path before editing.\n"
 	"  User says 'BP_Player' -> manage_asset(action='search', search_term='BP_Player', asset_type='Blueprint')\n"
 	"  Never guess paths. Use the object_path from results as asset_path in subsequent calls.\n"
@@ -400,7 +466,7 @@ REGISTER_VIBEUE_TOOL(manage_asset,
 	"Assets",
 	TOOL_PARAMS(
 		TOOL_PARAM("action",
-			"Action to perform: 'search', 'find', 'list', 'open', 'save', 'save_all', 'duplicate', 'move', 'delete', 'help'",
+			"Action to perform: 'search', 'find', 'list', 'open', 'save', 'save_all', 'duplicate', 'move', 'delete', 'import', 'help'",
 			"string", true),
 		TOOL_PARAM("asset_path",
 			"Content Browser path to a single asset (e.g. /Game/Blueprints/BP_Player). "
@@ -410,12 +476,17 @@ REGISTER_VIBEUE_TOOL(manage_asset,
 			"Partial name to match against asset names (case-insensitive). Used with action='search'.",
 			"string", false),
 		TOOL_PARAM("asset_type",
-			"Asset class filter: Blueprint, StaticMesh, Texture2D, Material, AnimSequence, etc. "
+			"Asset class filter: Blueprint, StaticMesh, Texture2D, Material, InputAction, etc. "
+			"Accepts any loaded class short name or a full /Script/Module.Class path. "
 			"Optional for: search, list.",
 			"string", false),
 		TOOL_PARAM("path",
 			"Content Browser folder path to list recursively (e.g. /Game/AI). Used with action='list'.",
 			"string", false),
+		TOOL_PARAM("max_results",
+			"Maximum number of assets to return for 'search' and 'list' (default 200). "
+			"'count' always reports the true total; a 'truncated' note appears when capped.",
+			"number", false),
 		TOOL_PARAM("source_path",
 			"Source asset path for action='duplicate' or action='move'.",
 			"string", false),
@@ -425,6 +496,12 @@ REGISTER_VIBEUE_TOOL(manage_asset,
 		TOOL_PARAM("skip_reference_check",
 			"If true, skip the reference check before delete (default false). Used with action='delete'.",
 			"boolean", false),
+		TOOL_PARAM("source_file_path",
+			"Absolute path to an image file on disk (e.g. C:/Images/rocks.jpg). Required for action='import'.",
+			"string", false),
+		TOOL_PARAM("asset_name",
+			"Optional asset name for action='import'. If omitted, derived from the source file name.",
+			"string", false),
 		TOOL_PARAM("help_action",
 			"Specific action name to get detailed help for. Used with action='help'.",
 			"string", false)
@@ -446,13 +523,14 @@ REGISTER_VIBEUE_TOOL(manage_asset,
 		else if (Action == TEXT("duplicate")){ return Action_Duplicate(FlatParams);}
 		else if (Action == TEXT("move"))     { return Action_Move(FlatParams);     }
 		else if (Action == TEXT("delete"))   { return Action_Delete(FlatParams);   }
+		else if (Action == TEXT("import"))   { return Action_Import(FlatParams);   }
 		else if (Action == TEXT("help"))     { return Action_Help(FlatParams);     }
 		else
 		{
 			TSharedPtr<FJsonObject> Err = MakeShared<FJsonObject>();
 			Err->SetBoolField(TEXT("success"), false);
 			Err->SetStringField(TEXT("error"), FString::Printf(
-				TEXT("Unknown action '%s'. Valid actions: search, find, list, open, save, save_all, duplicate, move, delete, help"),
+				TEXT("Unknown action '%s'. Valid actions: search, find, list, open, save, save_all, duplicate, move, delete, import, help"),
 				*Action));
 			FString Out;
 			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Out);

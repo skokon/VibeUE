@@ -17,10 +17,10 @@ https://www.vibeue.com/
 ## ✨ Key Features
 
 - **In-Editor AI Chat** - Chat with AI directly inside Unreal Editor
-- **Python API Services** - 30 specialized services with 1020 methods for Blueprints, Materials, Widgets, Landscape Terrain, Splines, Foliage, Animation Sequences, Animation Blueprints, Animation Montages, Niagara, Skeletons, Sound Cues, MetaSounds, Gameplay Tags, Screenshots, Viewport Control, Runtime Virtual Textures, StateTree Behavior, UV Mapping, Editor Transactions, Project/Engine Settings, and more
+- **Python API Services** - 32 specialized services with 1068 methods for Blueprints, Materials, Widgets, Landscape Terrain, Splines, Foliage, Animation Sequences, Animation Blueprints, Animation Montages, Niagara (systems + emitters + **scratch-pad graph authoring**), Skeletons, Sound Cues, MetaSounds, Gameplay Tags, Screenshots, Viewport Control, Runtime Virtual Textures, StateTree Behavior, UV Mapping, Editor Transactions, **Procedural FPS Map Blockout**, Project/Engine Settings, and more
 - **Full Unreal Python Access** - Execute any Unreal Engine Python API through MCP
 - **MCP Tools** - 10 tools for discovery, execution, asset workflows, debugging, terrain generation, and web research
-- **Domain Skills** - 34 lazy-loaded skill packs covering Blueprints, graph editing, materials, terrain, animation, audio, AI, gameplay tags, widgets, viewport, data, PCG (procedural content generation), UV mapping, and more
+- **Domain Skills** - 35 lazy-loaded skill packs covering Blueprints, graph editing, materials, terrain, animation, audio, AI, gameplay tags, widgets, viewport, data, PCG (procedural content generation), UV mapping, procedural map blockout, and more
 - **Custom Instructions** - Add project-specific context via markdown files
 - **External IDE Integration** - Connect VS Code, Claude Code, Cursor, and AntiGravity via MCP
 
@@ -30,7 +30,7 @@ https://www.vibeue.com/
 
 VibeUE uses a **Python-first architecture** that gives AI assistants access to:
 
-### 1. MCP Tools (10 tools)
+### 1. MCP Tools (10 tools, +1 optional)
 Lightweight MCP tools for AI interaction with Unreal:
 
 | Tool | Purpose |
@@ -40,11 +40,12 @@ Lightweight MCP tools for AI interaction with Unreal:
 | `discover_python_function` | Get function signatures and docstrings |
 | `execute_python_code` | Run Python code in Unreal Editor context |
 | `list_python_subsystems` | List available UE editor subsystems |
-| `manage_skills` | Load domain-specific knowledge on demand |
-| `manage_asset` | Search, open, save, move, duplicate, and delete assets safely |
+| `vibeue-skills-manager` | Load domain-specific knowledge on demand |
+| `manage_asset` | Search, open, save, move, duplicate, delete, and import (image files from disk) assets safely |
 | `read_logs` | Read and filter Unreal Engine log files with regex support |
 | `terrain_data` | Generate real-world heightmaps, map images, and water feature data from geographic coordinates |
 | `deep_research` | Web search, page fetching, and GPS geocoding — no API key required |
+| `manage_editor_chat` _(optional)_ | Drive the in-editor AI chat for automated end-to-end testing. **Hidden unless Chat Editor Testing mode is enabled** — see [In-Editor AI Chat → Chat Editor Testing](#-chat-editor-testing-optional). |
 
 **Note:** The `read_logs` MCP tool provides access to Unreal Engine's log files for debugging, error analysis, and workflow understanding.
 
@@ -108,24 +109,24 @@ execute_python_code(
 
 ##### Skills System Tool
 
-**`manage_skills`**
+**`vibeue-skills-manager`**
 ```python
 # List all available skills
-manage_skills(action="list")
+vibeue-skills-manager(action="list")
 
 # Suggest skills based on query
-manage_skills(action="suggest", query="create widget button")
+vibeue-skills-manager(action="suggest", query="create widget button")
 
 # Load single skill
-manage_skills(action="load", skill_name="blueprints")
+vibeue-skills-manager(action="load", skill_name="blueprints")
 
 # Load multiple skills together (more efficient - deduplicated discovery)
-manage_skills(action="load", skill_names=["blueprints", "enhanced-input"])
+vibeue-skills-manager(action="load", skill_names=["blueprints", "enhanced-input"])
 ```
 
-Skill names: `animation-blueprint`, `animation-editing`, `animation-montage`, `animsequence`, `asset-management`, `blueprint-graphs`, `blueprints`, `data-assets`, `data-tables`, `engine-settings`, `enhanced-input`, `enum-struct`, `foliage`, `gameplay-tags`, `landscape`, `landscape-auto-material`, `landscape-materials`, `level-actors`, `materials`, `metasounds`, `niagara-emitters`, `niagara-systems`, `pcg`, `pie-testing`, `project-settings`, `screenshots`, `skeleton`, `sound-cues`, `state-trees`, `terrain-data`, `umg-widgets`, `uv-mapping`, `vibeue`, `viewport`
+Skill names: `animation-blueprint`, `animation-editing`, `animation-montage`, `animsequence`, `asset-management`, `blueprint-graphs`, `blueprints`, `data-assets`, `data-tables`, `engine-settings`, `enhanced-input`, `enum-struct`, `foliage`, `gameplay-tags`, `landscape`, `landscape-auto-material`, `landscape-materials`, `level-actors`, `map-blockout`, `materials`, `metasounds`, `niagara-emitters`, `niagara-systems`, `pcg`, `pie-testing`, `project-settings`, `screenshots`, `skeleton`, `sound-cues`, `state-trees`, `terrain-data`, `umg-widgets`, `uv-mapping`, `vibeue`, `viewport`
 
-**Sub-docs (lazy-loaded deep reference material)** — Several skills are split into a concise `skill.md` index plus sibling sub-docs. Load a sub-doc with `skill_name="<skill>/<section>"` (e.g. `state-trees/api-reference`, `blueprint-graphs/build-graph`, `landscape/workflows-editing`). The index response lists every available sub-doc under `available_sections`. This keeps each load small while keeping deep reference material one call away.
+**Sub-docs (lazy-loaded deep reference material)** — Several skills are split into a concise `SKILL.md` index plus sibling sub-docs. Load a sub-doc with `skill_name="<skill>/<section>"` (e.g. `state-trees/api-reference`, `blueprint-graphs/build-graph`, `landscape/workflows-editing`, `map-blockout/workflows`). The index response lists every available sub-doc under `available_sections`. This keeps each load small while keeping deep reference material one call away.
 
 ##### Asset Workflow Tool
 
@@ -143,6 +144,10 @@ manage_asset(action="save_all")
 
 # Move or rename while preserving references
 manage_asset(action="move", source_path="/Game/StateTree/STT_Rotate", destination_path="/Game/StateTree/Tasks/STT_Rotate")
+
+# Import an image file from disk into the Content Browser (png/jpg/tga/exr/psd/...)
+# Use this instead of Python import_asset_tasks, which crashes the editor from a tool call.
+manage_asset(action="import", source_file_path="C:/Images/rocks.jpg", destination_path="/Game/UI/Textures", asset_name="T_Rocks")
 ```
 
 **Important:** Use `move`, not duplicate + delete, when the intent is a rename or relocation. Duplicate creates a second asset identity.
@@ -284,66 +289,21 @@ deep_research(action="reverse_geocode", lat=35.3606, lng=138.7274)
 - Research: `search` → `fetch_page` on best URL → synthesize
 - Terrain: `geocode "Mount Fuji"` → pass lat/lng to `terrain_data`
 
-### Log Reader Tool (`read_logs`)
-
-The `read_logs` MCP tool provides comprehensive log file access with filtering and analysis capabilities:
-
-**Actions:**
-- `list` - Browse available log files by category (System, Blueprint, Niagara, VibeUE)
-- `info` - Get file metadata (size, line count, last modified)
-- `read` - Read file with pagination (default 2000 lines, offset support)
-- `tail` - Get last N lines (like PowerShell's `Get-Content -Tail`)
-- `head` - Get first N lines
-- `filter` - Regex search with context lines and match limit
-- `errors` - Find error messages
-- `warnings` - Find warning messages
-- `since` - Get new content since last read (by line number)
-- `help` - Get detailed documentation
-
-**File Aliases:**
-- `main` or `system` → Main project log (FPS57.log)
-- `chat` or `vibeue` → VibeUE chat history log
-- `llm` → Raw LLM API request/response log
-- Or use full file paths
-
-**Examples:**
-```python
-# List all logs
-read_logs(action="list")
-
-# Filter by category
-read_logs(action="list", category="Niagara")
-
-# Get last 50 lines of main log
-read_logs(action="tail", file="main", lines=50)
-
-# Search for errors with context
-read_logs(action="filter", file="main", pattern="ERROR|EXCEPTION", context_lines=5)
-
-# Find compilation errors
-read_logs(action="errors", file="main", max_matches=20)
-
-# Read specific range
-read_logs(action="read", file="chat", offset=1000, limit=500)
-
-# Check for new content since line 2500
-read_logs(action="since", file="main", last_line=2500)
-```
-
-### 2. VibeUE Python API Services (30 services, 1020 methods)
+### 2. VibeUE Python API Services (32 services, 1068 methods)
 High-level services exposed to Python for common game development tasks:
 
 | Service | Methods | Domain |
 |---------|---------|--------|
 | `StateTreeService` | 94 | StateTree asset creation, state hierarchy, state type/link configuration, editor selection, tasks, evaluators, conditions, transitions, delegate bindings, parameters, component overrides, property bindings, **utility AI considerations**, compile/save |
-| `BlueprintService` | 116 | Blueprint lifecycle, variables, functions, components, nodes, **event dispatchers (multicast delegates) + broadcast nodes**, **custom event input pin CRUD**, **timelines (float/vector/color/event tracks, key CRUD)**, comment boxes, batch graph builder, subset auto-layout |
+| `BlueprintService` | 119 | Blueprint lifecycle, variables, functions, components, **interfaces (add/remove)**, nodes, **event dispatchers (multicast delegates) + broadcast nodes + bind-on-variable**, **custom event input pin CRUD**, **timelines (float/vector/color/event tracks, key CRUD)**, comment boxes, batch graph builder, subset auto-layout |
 | `AnimSequenceService` | 89 | Animation sequence creation, keyframes, bone tracks, curves, notifies, preview |
 | `LandscapeService` | 68 | Landscape creation, sculpting, heightmaps, weight layers, holes, splines |
+| `MapBlockoutService` | 19 | **Procedural FPS map blockout** — turn a VibeUE landscape (heightmap + paint layers) into a gated, AAA-style open-world plan (roads, POIs, fields, forests/treelines, railway/bridges), render Stage 1–5 + final heatmap/combined deliverables, then materialize as splines / paint layers / actors / foliage |
 | `AnimMontageService` | 62 | Animation montages: sections, slots, segments, branching points, blend settings |
 | `SkeletonService` | 53 | Skeleton & skeletal mesh manipulation, bones, sockets, retargeting, curves, blend profiles |
 | `MaterialNodeService` | 41 | Material graph expressions and connections, **material diagnostics (compile errors + sampler info)** |
 | `WidgetService` | 41 | UMG widget blueprints, components, snapshots, styling, animation, preview/PIE validation, and MVVM ViewModel bindings |
-| `AnimGraphService` | 38 | Animation Blueprint state machines, states, transitions, anim nodes |
+| `AnimGraphService` | 48 | Animation Blueprint state machines, states, transitions, transition rules, declarative builder, validation, anim nodes |
 | `SoundCueService` | 38 | Sound cue graph editing, sound node creation, wiring, and audio behavior authoring |
 | `NiagaraService` | 37 | Niagara system lifecycle, emitters, parameters, settings discovery |
 | `ActorService` | 33 | Level actor management, viewport camera control, transform lock/constraints |
@@ -351,10 +311,11 @@ High-level services exposed to Python for common game development tasks:
 | `EngineSettingsService` | 23 | Engine settings, rendering, physics, audio, cvars, scalability |
 | `InputService` | 23 | Enhanced Input actions, contexts, modifiers, triggers |
 | `NiagaraEmitterService` | 23 | Niagara emitter modules, renderers, properties |
+| `NiagaraScratchPadService` | 19 | Niagara scratch-pad module authoring: create modules, add Map Get/Set/Op/Custom HLSL nodes, typed pins, wire pins, declare module inputs/outputs |
 | `LandscapeMaterialService` | 22 | Landscape material layers, blend nodes, auto-material creation, layer info objects, grass output |
 | `UVMappingService` | 22 | **Per-LOD UV channel inspection, transforms, lightmap generation, per-region edits (by normal / polygon group / UV island), auto-unwrap (planar/box/cylindrical), packing, layout export** |
 | `EnumStructService` | 20 | User-defined enums and structs (create, edit, delete) |
-| `AssetDiscoveryService` | 20 | Asset search, import/export, references, move/rename workflows |
+| `AssetDiscoveryService` | 21 | Asset search, import (image files from disk) / export, references, move/rename workflows |
 | `ViewportService` | 19 | Viewport camera type (perspective/ortho), view mode, FOV, clip planes, exposure, game view, cinematic control, camera speed, viewport layout (single/quad) |
 | `MetaSoundService` | 17 | MetaSound graph authoring, nodes, interfaces, inputs/outputs, and wiring |
 | `ProjectSettingsService` | 16 | Project settings, editor preferences, UI configuration |
@@ -452,6 +413,38 @@ The built-in chat interface runs directly in Unreal Editor:
 | **LLM Provider** | VibeUE | Select VibeUE or OpenRouter |
 | **Temperature** | 0.2 | Creativity (0.0-1.0) |
 | **Max Tool Iterations** | 100 | Max tool calls per turn |
+| **Chat Editor Testing** | Off | Exposes the optional `manage_editor_chat` MCP tool (see below) |
+
+### 🧪 Chat Editor Testing (optional)
+
+A testing mode that lets an **external** agent drive the **in-editor** AI chat end-to-end — useful for
+automated regression runs of skills/services against a live editor. When enabled, the MCP server exposes
+one extra tool, **`manage_editor_chat`**; it is **hidden by default** so normal users and the in-editor
+chat AI never see it.
+
+**Enable it any of these ways:**
+- Settings checkbox: *Project Settings → Plugins → VibeUE → General → Chat Editor Testing*
+- Config: `[VibeUE] ChatEditorTesting=True` in `EditorPerProjectUserSettings.ini`
+- Launch flag: start the editor with `-VibeUEChatTesting`
+
+**`manage_editor_chat` actions:** `open_chat`, `send_message`, `check_chat_status`, `get_messages`,
+`get_last_response`, `stop_chat`, `reset_chat` (with optional `archive_log`), `approve_tool` /
+`reject_tool`, `set_yolo_mode`, `set_model`, `archive_chat_log`, `get_chat_log_path`, `help`.
+
+> `send_message` is asynchronous: poll `check_chat_status` until `is_idle=true`, then call
+> `get_last_response`. Enable `set_yolo_mode` for unattended runs so Python execution auto-approves.
+
+### 🧠 Memory (Persistent Across Sessions)
+
+The in-editor chat has a **memory** that persists between editor sessions, so the assistant can recall things you've asked it to remember in earlier conversations (project conventions, decisions, recurring preferences, where things live, etc.).
+
+- **Where it's stored**: plain files on disk under `<YourProject>/Saved/VibeUE/Memory`. It's per-project and local to your machine — nothing is committed to source control and nothing is sent to external services beyond the normal chat request. You can browse, back up, or clear these files yourself at any time.
+- **How recall works**: at the start of each chat, an index of your saved memory files is added to the assistant's context, so it always knows what it has stored. When you ask about something a memory covers, it reads that file and answers from it. (The index refreshes when a new chat is started.)
+- **How saving works**: the assistant **only writes to memory when you explicitly ask it to** — e.g. *"remember that our UI color is #1E90FF"* or *"save this to memory"*. It will never store things on its own. It may *offer* to save ("Want me to remember this?"), but it waits for your "yes" before writing anything. To remove something, just ask it to forget.
+- **Interface**: mirrors the standard memory tool — `view`, `create`, `str_replace`, `insert`, `delete`, `rename` — scoped to the memory folder (paths outside it are rejected).
+- **Scope**: this memory is **exclusive to the in-editor chat**. It is **not** exposed through the MCP server, so external clients (VS Code Copilot, Cursor, etc.) cannot read or write it.
+
+> The assistant's memory behavior is defined in `Content/instructions/vibeue.instructions.md` — edit that file to tune how aggressively it recalls or what it's allowed to store.
 
 ---
 
@@ -519,7 +512,7 @@ The AI **must know**:
 - ✅ Compile blueprints before adding variable nodes
 - ✅ Use full asset paths (`/Game/Path/Asset`, not `Asset`)
 - ✅ Property values are strings, not Python types
-- ✅ Load skills with `manage_skills` for domain-specific knowledge
+- ✅ Load skills with `vibeue-skills-manager` for domain-specific knowledge
 - ❌ Never guess method names - discover first
 - ❌ Never use modal dialogs or blocking operations
 - ❌ Never assume service counts or method availability
@@ -535,7 +528,7 @@ VibeUE uses a **Skills System** to dramatically reduce AI context overhead while
 Instead of loading all documentation at once, skills are lazy-loaded on demand:
 
 1. **AI detects the task** (e.g., "Create a blueprint with variables")
-2. **Skill is automatically or manually loaded** via `manage_skills` tool
+2. **Skill is automatically or manually loaded** via `vibeue-skills-manager` tool
 3. **Skill contains**: Critical rules, workflows, common mistakes, property formats
 4. **AI uses skill knowledge** combined with live discovery via `discover_python_class`
 
@@ -547,29 +540,29 @@ Each skill includes:
 - **Common Mistakes** - Things to avoid (wrong property names, etc.)
 - **Property Formats** - How to format values in Unreal string syntax
 
-**Domain Skills** (dynamically discovered from `Content/Skills/*/skill.md`):
+**Domain Skills** (dynamically discovered from `Content/Skills/*/SKILL.md`):
 
-Skills are automatically discovered at runtime from the `Content/Skills/` directory. Each skill folder contains a `skill.md` with YAML frontmatter defining its metadata. The system prompt's `{SKILLS}` token is replaced with a dynamically generated table of all available skills.
+Skills are automatically discovered at runtime from the `Content/Skills/` directory. Each skill folder contains a `SKILL.md` with YAML frontmatter defining its metadata. The system prompt's `{SKILLS}` token is replaced with a dynamically generated table of all available skills.
 
-Current skills include: `animation-blueprint`, `animation-editing`, `animation-montage`, `animsequence`, `asset-management`, `blueprint-graphs`, `blueprints`, `data-assets`, `data-tables`, `engine-settings`, `enhanced-input`, `enum-struct`, `foliage`, `gameplay-tags`, `landscape`, `landscape-auto-material`, `landscape-materials`, `level-actors`, `materials`, `metasounds`, `niagara-emitters`, `niagara-systems`, `pcg`, `pie-testing`, `project-settings`, `screenshots`, `skeleton`, `sound-cues`, `state-trees`, `terrain-data`, `umg-widgets`, `uv-mapping`, `vibeue`, `viewport`
+Current skills include: `animation-blueprint`, `animation-editing`, `animation-montage`, `animsequence`, `asset-management`, `blueprint-graphs`, `blueprints`, `data-assets`, `data-tables`, `engine-settings`, `enhanced-input`, `enum-struct`, `foliage`, `gameplay-tags`, `landscape`, `landscape-auto-material`, `landscape-materials`, `level-actors`, `map-blockout`, `materials`, `metasounds`, `niagara-emitters`, `niagara-systems`, `pcg`, `pie-testing`, `project-settings`, `screenshots`, `skeleton`, `sound-cues`, `state-trees`, `terrain-data`, `umg-widgets`, `uv-mapping`, `vibeue`, `viewport`
 
-**Skills with sub-docs** — `animsequence`, `blueprint-graphs`, `landscape`, `landscape-auto-material`, and `state-trees` are split into a concise `skill.md` index plus sibling reference sub-docs. The index lists every available sub-doc under `available_sections` and you load one with `skill_name="<skill>/<section>"`. Examples: `state-trees/api-reference`, `state-trees/blueprint-tasks`, `state-trees/event-payloads`, `blueprint-graphs/build-graph`, `blueprint-graphs/array-operations`, `landscape/workflows-editing`.
+**Skills with sub-docs** — `animsequence`, `blueprint-graphs`, `landscape`, `landscape-auto-material`, `map-blockout`, and `state-trees` are split into a concise `SKILL.md` index plus sibling reference sub-docs. The index lists every available sub-doc under `available_sections` and you load one with `skill_name="<skill>/<section>"`. Examples: `state-trees/api-reference`, `state-trees/blueprint-tasks`, `state-trees/event-payloads`, `blueprint-graphs/build-graph`, `blueprint-graphs/array-operations`, `landscape/workflows-editing`, `map-blockout/workflows`, `map-blockout/stage-rules`.
 
 ### Using Skills
 
 **In-Editor Chat** - Skills auto-load based on keywords
 
-**External AI** - Manually load with `manage_skills` tool:
+**External AI** - Manually load with `vibeue-skills-manager` tool:
 
 ```python
 # List all available skills
-manage_skills(action="list")
+vibeue-skills-manager(action="list")
 
 # Load a specific skill
-manage_skills(action="load", skill_name="blueprints")
+vibeue-skills-manager(action="load", skill_name="blueprints")
 
 # Load multiple skills together (deduplicated discovery)
-manage_skills(action="load", skill_names=["blueprints", "enhanced-input"])
+vibeue-skills-manager(action="load", skill_names=["blueprints", "enhanced-input"])
 ```
 
 Skill response includes:
@@ -588,7 +581,7 @@ The recommended pattern:
 import unreal
 
 # 1. Load relevant skill for domain knowledge
-manage_skills(action="load", skill_name="blueprints")
+vibeue-skills-manager(action="load", skill_name="blueprints")
 # ↓ Skill response tells you about BlueprintService methods and critical rules
 
 # 2. Discover exact method signatures BEFORE calling
@@ -625,7 +618,7 @@ All services are available via `unreal.<ServiceName>.<method>()`.
 unreal.BlueprintService.create_blueprint("BP_MyActor", "Actor", "/Game/Blueprints")
 ```
 
-### BlueprintService (116 methods)
+### BlueprintService (118 methods)
 
 **Lifecycle:**
 - `create_blueprint(name, parent_class, path)` - Create new blueprint
@@ -657,6 +650,10 @@ unreal.BlueprintService.create_blueprint("BP_MyActor", "Actor", "/Game/Blueprint
 - `get/set_component_property(...)` - Property access
 - `get_component_hierarchy(path)` - Get hierarchy
 
+**Interfaces:**
+- `add_interface(path, interface)` - Implement a Blueprint Interface (idempotent; recompiles inline)
+- `remove_interface(path, interface)` - Remove a Blueprint Interface
+
 **Nodes & Graph Editing:**
 - `add_*_node(...)` - Add nodes (branch, variable, math, cast, event, custom event, function call, etc.)
 - `add_validated_get_node(...)`, `add_member_get_node(...)` - Specialized variable getter nodes
@@ -683,7 +680,8 @@ unreal.BlueprintService.create_blueprint("BP_MyActor", "Actor", "/Game/Blueprint
 - `remove_event_dispatcher(path, name)` - Remove the dispatcher and its signature graph
 - `add_event_dispatcher_parameter(path, name, param_name, param_type, ...)` - Add an input on the signature
 - `add_call_delegate_node(path, graph, name, x, y)` - Spawn the `UK2Node_CallDelegate` (broadcast) node
-- `add_delegate_bind_node(path, graph, target_class, delegate_name, x, y)` - Spawn a Bind Event node to subscribe
+- `add_delegate_bind_node(path, graph, target_class, delegate_name, x, y)` - Spawn a Bind Event node to subscribe. `target_class` accepts `"Self"`, native class names, Blueprint asset paths, or short BP names with/without `_C`
+- `add_delegate_bind_on_variable(path, graph, variable_name, delegate_name, x, y)` - One-shot: derives owner class from a variable's type, creates Bind Event + Get, auto-wires Target (mirrors `add_function_call_on_variable`)
 - `add_create_delegate_node(...)`, `add_create_event_node(...)` - Wrap a function as a delegate reference
 
 **Timelines (full track + key CRUD):**
@@ -699,9 +697,20 @@ unreal.BlueprintService.create_blueprint("BP_MyActor", "Actor", "/Game/Blueprint
 - `get_function_parameters(...)`, `get_graph_definition(...)`, `get_available_components(...)`
 - `compare_components(...)`, `diff_blueprints(...)`
 
-### AnimGraphService (38 methods)
+### AnimGraphService (48 methods)
 
-AnimGraphService provides comprehensive Animation Blueprint manipulation for state machines, states, transitions, and animation nodes:
+AnimGraphService provides comprehensive Animation Blueprint manipulation for state machines, states, transitions, transition rules, and animation nodes — including a declarative one-call builder and a validation pass so AI-authored machines actually run:
+
+**High-Level Authoring (recommended):**
+- `build_state_machine(path, machine, spec_json, x, y)` - Build/extend an entire state machine (states, animations, transitions, rules, entry) from one JSON spec, atomically and idempotently; compiles and returns a JSON report
+- `set_state_animation(path, machine, state, anim_path, loop, play_rate)` - One call: create/assign the state's sequence player AND wire it to Output Pose
+- `validate_state_machine(path, machine)` - Report inert transitions, missing entry state, states with no animation, unreachable states
+
+**Transition Rules (a transition with NO rule never fires):**
+- `set_transition_rule_from_bool(path, machine, source, dest, bool_var, invert)` - Drive a transition from a bool variable
+- `set_transition_rule_comparison(path, machine, source, dest, float_var, op, value)` - Numeric comparison rule (greater/less/greater_equal/less_equal/equal/not_equal)
+- `set_transition_rule_automatic(path, machine, source, dest, trigger_time)` - Auto-fire when the source state's animation is (almost) finished (one-shots)
+- `clear_transition_rule(path, machine, source, dest)` - Non-destructively reset a transition's rule
 
 **State Machine Management:**
 - `add_state_machine(path, name, x, y)` - Add state machine to AnimGraph
@@ -711,14 +720,17 @@ AnimGraphService provides comprehensive Animation Blueprint manipulation for sta
 **State Management:**
 - `add_state(path, machine, name, x, y)` - Add state to state machine
 - `remove_state(path, machine, name, remove_transitions)` - Remove state
+- `set_entry_state(path, machine, state)` - Set the entry/default state (non-destructive re-link)
 - `list_states_in_machine(path, machine)` - List all states and transitions
 - `get_state_info(path, machine, state)` - Get detailed state info
 - `open_anim_state(path, machine, state)` - Open state in editor
 
 **Transition Management:**
-- `add_transition(path, machine, source, dest, blend_duration)` - Add transition
+- `add_transition(path, machine, source, dest, blend_duration)` - Add transition (remember to set a rule!)
 - `remove_transition(path, machine, source, dest)` - Remove transition
-- `get_state_transitions(path, machine, state)` - Get transitions for state
+- `set_transition_priority(path, machine, source, dest, priority)` - Set priority order (lower wins)
+- `set_transition_blend(path, machine, source, dest, blend_duration, blend_mode)` - Set crossfade duration / blend mode
+- `get_state_transitions(path, machine, state)` - Get transitions for state (now includes rule_type/rule_summary/has_rule)
 - `open_transition(path, machine, source, dest)` - Open transition rule in editor
 
 **Conduit Management:**
@@ -889,11 +901,12 @@ AnimMontageService provides comprehensive CRUD operations for Animation Montage 
 - `add_modifier/trigger(...)` - Add modifiers/triggers
 - `get_available_keys(filter)` - List bindable keys
 
-### AssetDiscoveryService (20 methods)
+### AssetDiscoveryService (21 methods)
 
 - `search_assets(term, type)` - Find assets
 - `save_asset(path)` / `save_all_assets()` - Save
-- `import_texture(file, dest)` - Import texture
+- `import_asset(file, dest_folder, name)` - Import an image file from disk (crash-safe; returns asset path + error)
+- `import_texture(file, dest)` - Import texture (full asset path; uses the same safe importer)
 - `export_texture(asset, file)` - Export texture
 - `get_asset_dependencies/referencers(path)` - References
 
@@ -1105,6 +1118,64 @@ LandscapeMaterialService handles the creation and configuration of landscape-spe
 **Existence Checks:**
 - `landscape_material_exists(path)` / `layer_info_exists(path)` - Existence checks
 
+### MapBlockoutService (19 methods)
+
+MapBlockoutService turns a VibeUE-generated landscape (heightmap + paint layers) into a fully validated, **AAA-style open-world FPS map blockout** — roads, points of interest, fields, forests/treelines, railway, and bridges — then materializes that plan into real engine geometry. The quality benchmark is **Arma / Squad**.
+
+The design pipeline is **gated**: every stage runs ordered pass/fail checks, and you may not advance until all checks pass. Phase 1 designs the plan on the CPU (masks + polylines, no engine geometry); Phase 2 materializes it into the level. Load the `map-blockout` skill for the per-stage rules, config reference, and return-type shapes.
+
+**Input (Stage 0):**
+- `export_landcover_grid(landscape_label, grid_n=120)` - Read every paint layer + the heightmap off the source landscape and return a normalized landcover grid (replaces the host-Python `export_terrain_data.py` + `build_inputs.py` round-trip)
+- `write_landcover_grid_json(grid, output_file_path)` / `load_landcover_grid_json(file_path)` - Persist / reload a grid as JSON
+- `extract_river_centerlines(water_mask, world_lo, ...)` - Trace river centerlines from a water mask into world-space polylines
+
+**Design stages (each returns a result struct with a `gate`):**
+- `generate_roads(grid, config)` - Stage 1: main + dirt road network
+- `place_pois(grid, roads, config)` - Stage 2: villages, towns, farmsteads and other POIs along the roads
+- `place_fields(grid, roads, config)` - Stage 3: crop fields
+- `place_foliage(grid, roads, config)` - Stage 4: forests, treelines, and underbrush/scrub
+- `place_railway(grid, roads, config)` - Stage 5: railway line + bridges
+- `run_final_pass(state)` - Final gated validation across all stages before delivery
+
+**Rendering (color-keyed deliverables):**
+- `render_stage_snapshot(stage, state, output_dir)` - Render a cumulative Stage 1–5 PNG snapshot
+- `render_final_deliverables(state, output_dir)` - Render the combined map, foliage heatmap, and map heatmap (with the authoritative color key)
+
+**Orchestrators (one-call pipelines):**
+- `run_full_pipeline(grid, config)` - Run Stages 1–5 + Final Pass + all renders from a prepared grid
+- `run_full_pipeline_for_landscape(landscape_label, config)` - Stage 0 → full pipeline straight from a landscape actor
+
+**Materialization (Phase 2 — plan → level geometry):**
+- `materialize_roads_as_splines(roads, landscape_label)` - Bake the road network into landscape splines
+- `materialize_fields_as_paint(fields, landscape_label, layer)` - Paint field regions onto a weight layer
+- `materialize_pois_as_actors(pois, folder_path, ...)` - Spawn POI marker/boundary actors
+- `materialize_forest_as_foliage(foliage, forest_ft, treeline_ft, scrub_ft)` - Scatter forest, treeline, and scrub foliage types
+- `materialize_railway_and_bridges(railway, landscape_label, ...)` - Lay the railway spline and place bridge meshes
+
+```python
+import unreal
+S = unreal.MapBlockoutService
+
+# Phase 1 — design + validate the plan (no engine geometry yet)
+cfg = unreal.MapBlockoutConfig()
+cfg.level_name = "Verkhova"
+cfg.layers.crop, cfg.layers.forest, cfg.layers.flood = "Crop", "Forest", "Water"
+
+result = S.run_full_pipeline_for_landscape("Landscape1", cfg)
+if not result.success:
+    print(result.error_message)   # inspect result.final_state.<stage>.gate.checks
+else:
+    print("Wrote:", result.output_files)
+
+    # Phase 2 — materialize the validated plan into the level
+    S.materialize_roads_as_splines(result.final_state.stage1_roads, "Landscape1")
+    S.materialize_fields_as_paint(result.final_state.stage3_fields, "Landscape1", "Crop")
+    S.materialize_pois_as_actors(result.final_state.stage2_pois, "/MapBlockout/POIs/")
+    S.materialize_forest_as_foliage(result.final_state.stage4_foliage,
+        "/Game/Foliage/FT_Forest", "/Game/Foliage/FT_Treeline", "/Game/Foliage/FT_Scrub")
+    S.materialize_railway_and_bridges(result.final_state.stage5_railway, "Landscape1")
+```
+
 ### FoliageService (15 methods)
 
 FoliageService provides foliage type management, instance scattering, layer-aware placement, and instance queries:
@@ -1208,6 +1279,43 @@ FoliageService provides foliage type management, instance scattering, layer-awar
 **Emitter Properties:**
 - `get_emitter_properties(system, emitter)` - Get lifecycle and property info
 - `get_rapid_iteration_parameters(system, emitter, type)` - Get rapid iteration parameters
+
+### NiagaraScratchPadService (19 methods)
+
+Authors scratch-pad module graphs from Python without an open editor. `NiagaraEmitterService` can list/add stack modules; `NiagaraScratchPadService` reaches *inside* a scratch module to build its node graph - Map Get reads, Map Set writes, math (`UNiagaraNodeOp`), Custom HLSL with typed input/output pins, and schema-validated pin connections.
+
+**Module lifecycle:**
+- `create_scratch_module(system, emitter, stage, name)` - Create an empty scratch module on a stage
+- `get_scratch_script_path(system, emitter, module)` - Resolve the backing scratch UNiagaraScript's object path
+- `list_scratch_modules(system, emitter)` - List all scratch modules across the emitter's stacks
+
+**Graph inspection:**
+- `list_nodes(system, emitter, module)` - List nodes in the scratch graph
+- `get_node_pins(system, emitter, module, node_id)` - Get a node's input/output pins
+- `list_connections(system, emitter, module)` - List all wires
+
+**Node authoring:**
+- `add_node(system, emitter, module, node_type, x, y)` - Create MapGet/MapSet/If/Input nodes
+- `add_op_node(system, emitter, module, op_name, x, y)` - Create a math op node (e.g. `Numeric::Multiply`)
+- `add_custom_hlsl_node(system, emitter, module, code, x, y)` - Create a Custom HLSL node with code
+- `set_custom_hlsl_code(system, emitter, module, node_id, code)` - Replace HLSL body
+- `get_custom_hlsl_code(system, emitter, module, node_id)` - Read HLSL body
+- `add_pin(system, emitter, module, node_id, direction, type, name)` - Add a typed pin (Custom HLSL via RequestNewTypedPin, MapGet/Set via AddParameterPin)
+- `delete_node(system, emitter, module, node_id)`
+- `set_node_position(system, emitter, module, node_id, x, y)`
+
+**Wiring:**
+- `connect_pins(system, emitter, module, from_node, from_pin, to_node, to_pin)` - Validated through `UEdGraphSchema_Niagara::TryCreateConnection`
+- `disconnect_pin(system, emitter, module, node_id, pin_name)`
+
+**Module signature helpers:**
+- `add_module_input(system, emitter, module, input_name, type)` - Adds `Module.<name>` to the Map Get (creating it if needed). Exposes the input on the stack.
+- `add_module_output(system, emitter, module, output_name, type)` - Adds a write to the Map Set.
+
+**Apply:**
+- `apply_changes(system_path)` - Refreshes every scratch-referencing stack module, rebuilds emitter nodes, recompiles, and saves. Call once at the end of a batch of edits.
+
+See the [`niagara-emitters` skill](Content/Skills/niagara-emitters/SKILL.md) for an end-to-end example that builds a Custom-HLSL splat module.
 
 ### ScreenshotService (5 methods)
 
@@ -1924,14 +2032,14 @@ The system prompt supports dynamic token replacement. When the instructions are 
 
 | Token | Replacement | Source |
 |-------|-------------|--------|
-| `{SKILLS}` | Skills table with names, descriptions, and services | Scanned from `Content/Skills/*/skill.md` frontmatter |
+| `{SKILLS}` | Skills table with names, descriptions, and services | Scanned from `Content/Skills/*/SKILL.md` frontmatter |
 
 **Example usage in `vibeue.instructions.md`:**
 
 ```markdown
 ## Available Skills
 
-Load skills using `manage_skills(action="load", skill_name="<name>")`:
+Load skills using `vibeue-skills-manager(action="load", skill_name="<name>")`:
 
 {SKILLS}
 ```
@@ -1946,7 +2054,7 @@ Load skills using `manage_skills(action="load", skill_name="<name>")`:
 ...
 ```
 
-This allows the skills list to stay in sync automatically when skills are added, removed, or modified. Each skill's metadata is defined in its `skill.md` YAML frontmatter:
+This allows the skills list to stay in sync automatically when skills are added, removed, or modified. Each skill's metadata is defined in its `SKILL.md` YAML frontmatter:
 
 ```yaml
 ---
@@ -1963,11 +2071,16 @@ vibeue_classes:
 
 ## 🔌 External MCP Servers
 
-Connect additional MCP servers via `Config/vibeue.mcp.json`:
+The in-editor chat can connect to additional MCP servers via `Config/vibeue.mcp.json`.
+Both `stdio` and `http` transports are supported:
 
 ```json
 {
   "servers": {
+    "unreal-engine-skills": {
+      "type": "http",
+      "url": "https://www.unrealengineskills.com/api/mcp"
+    },
     "my-tool": {
       "type": "stdio",
       "command": "python",
@@ -1976,6 +2089,23 @@ Connect additional MCP servers via `Config/vibeue.mcp.json`:
   }
 }
 ```
+
+### 🧠 Brains vs 🤚 Hands
+
+VibeUE ships preconfigured with the **[Unreal Engine Skills](https://www.unrealengineskills.com)**
+MCP server (`unreal-engine-skills-manager` tool) — a UE 5.7 domain-knowledge library: correct
+engine APIs, architecture patterns, best practices, and engine-source citations.
+
+The two skill systems complement each other:
+
+| | **Brains** — `unreal-engine-skills-manager` | **Hands** — `vibeue-skills-manager` |
+|---|---|---|
+| Answers | WHAT to build and WHY (engine knowledge, best practices) | HOW to execute it in the editor (service workflows, formats) |
+| Touches the editor? | No — knowledge only | Yes — via VibeUE services |
+
+The system prompt instructs the AI to consult the Brains library before design, review, or
+"best practices" questions, then use VibeUE skills to do the editor work. If the external
+server is unreachable, the chat falls back to VibeUE skills alone.
 
 ---
 
